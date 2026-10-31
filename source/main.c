@@ -1,4 +1,18 @@
-// ytmusic3ds v3.19 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.20 - YouTube Music style client for (Old) 3DS.
+//
+// v3.20 changes over v3.19 (user request, 2026-10-31): UI pass
+//   toward the real YouTube Music app, compared against the
+//   user's screenshots: pure-black background and nav bar,
+//   rounded corners on all artwork (alpha mask baked into the
+//   thumbnail textures, rounded placeholder blocks), floating
+//   rounded highlight on the selected row, chunkier list rows
+//   and chips, taller mini player with a 44px jacket, filled
+//   bookmark icon on the active library tab, bigger player
+//   title. Also: the corner version label now uses APP_VER
+//   (it had stayed "v3.16" since that build), APP_VER moved to
+//   app.h, and the favourites/config import now walks every
+//   previous version's folder newest-first instead of only
+//   v3.16's.
 //
 // v3.19 changes over v3.18 (user report, 2026-10-31):
 //   - The v3.18 worker thread never actually started: it was
@@ -172,7 +186,7 @@
 #include "ui.h"
 #include "updater.h"
 
-#define APP_VER "3.19"
+// APP_VER lives in app.h (v3.20: ui.c draws it too).
 
 // The resolve/playback paths run deep curl + mbedTLS call chains on
 // this thread; give the main stack real headroom (v3.1 crash fix).
@@ -858,7 +872,7 @@ static int do_update_flow(void) {
     char self[340], tmp[360];
     snprintf(self, sizeof(self), "%s",
              g_self_path[0] ? g_self_path
-                            : APP_DIR "/ytmusic3ds-v3.16.3dsx");
+                            : APP_DIR "/ytmusic3ds-v" APP_VER ".3dsx");
     snprintf(tmp, sizeof(tmp), "%s/update.tmp", APP_DIR);
     if (updater_apply(&info, self, tmp, upd_cb, err,
                       sizeof(err)) != 0) {

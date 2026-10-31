@@ -10,6 +10,8 @@
 
 #include "lyrics.h"
 
+#include "app.h" // APP_VER for the User-Agent (v3.20)
+
 #include <3ds.h>
 #include <curl/curl.h>
 #include <jansson.h>
@@ -73,7 +75,7 @@ static int http_get(const char *url, buf_t *out) {
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, buf_write);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
         curl_easy_setopt(curl, CURLOPT_USERAGENT,
-                         "ytmusic3ds/3.9 (Old 3DS homebrew client)");
+                         "ytmusic3ds/" APP_VER " (Old 3DS homebrew client)");
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 12L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);

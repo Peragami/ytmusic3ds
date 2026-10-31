@@ -6,6 +6,7 @@
 #include <curl/curl.h>
 #include <jpeglib.h>
 
+#include <math.h>
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -255,6 +256,8 @@ static void art_crop(const uint8_t *rgb, int w, int h, int *ox, int *oy,
 
 // Crop the decoded RGB to the artwork square (letterbox-trimmed)
 // and sample it into a dim x dim RGBA8 texture in tiled order.
+// v3.20: corners outside a rounded-rect radius are made
+// transparent, so artwork has the app's rounded corners.
 static int upload_texture(int bank, int idx, const uint8_t *rgb, int w,
                           int h) {
     int dim = bank_dim[bank];
@@ -263,9 +266,20 @@ static int upload_texture(int bank, int idx, const uint8_t *rgb, int w,
     u32 *px = (u32 *)tex->data;
     int side, x0, y0;
     art_crop(rgb, w, h, &x0, &y0, &side);
+    float rr = dim * 0.12f;
+    float half = dim * 0.5f;
     for (int y = 0; y < dim; y++) {
         int sy = y0 + (y * side) / dim;
+        float qy = fabsf(y + 0.5f - half) - (half - rr);
         for (int x = 0; x < dim; x++) {
+            float qx = fabsf(x + 0.5f - half) - (half - rr);
+            u32 alpha = 255u;
+            if (qx > 0 && qy > 0 && qx * qx + qy * qy > rr * rr)
+                alpha = 0;
+            if (!alpha) {
+                px[morton_offset(x, y, dim)] = 0;
+                continue;
+            }
             int sx = x0 + (x * side) / dim;
             const uint8_t *p = rgb + ((size_t)sy * w + sx) * 3;
             u32 r = p[0], g = p[1], b = p[2];
@@ -274,7 +288,7 @@ static int upload_texture(int bank, int idx, const uint8_t *rgb, int w,
             // GPU read as alpha - red became transparency and the
             // channels rotated).
             px[morton_offset(x, y, dim)] =
-                (r << 24) | (g << 16) | (b << 8) | 255u;
+                (r << 24) | (g << 16) | (b << 8) | alpha;
         }
     }
     C3D_TexSetFilter(tex, GPU_LINEAR, GPU_LINEAR);

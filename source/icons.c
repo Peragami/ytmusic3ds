@@ -18,7 +18,7 @@ static const u8 variant_rgb[ICON_VARIANTS][3] = {
     {255, 255, 255}, // 0 white (COL_WHITE)
     {170, 170, 170}, // 1 dim   (COL_DIM)
     {255, 0, 0},     // 2 accent(COL_ACCENT)
-    {3, 3, 3},       // 3 bg    (COL_BG, glyph on the white button)
+    {0, 0, 0},       // 3 bg    (COL_BG, glyph on the white button)
 };
 
 static C3D_Tex g_tex[ICON_COUNT][ICON_VARIANTS];
@@ -77,7 +77,7 @@ static int variant_for(u32 color) {
     // C2D_Color32 packs r | g<<8 | b<<16 | a<<24.
     if (color == C2D_Color32(170, 170, 170, 255)) return 1;
     if (color == C2D_Color32(255, 0, 0, 255)) return 2;
-    if (color == C2D_Color32(3, 3, 3, 255)) return 3;
+    if (color == C2D_Color32(0, 0, 0, 255)) return 3;
     return 0; // white and anything else
 }
 

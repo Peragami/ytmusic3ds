@@ -15,17 +15,18 @@ C3D_RenderTarget *g_bot_tgt = NULL;
 C2D_Font g_font = NULL;
 C2D_TextBuf g_textbuf = NULL;
 
-// YouTube Music palette (v3.7: matched to the app - near-black
-// background, #212121 elevated surfaces, #AAAAAA secondary text,
-// white progress; red survives only as the brand accent).
-#define COL_BG C2D_Color32(3, 3, 3, 255)
+// YouTube Music palette (v3.7: matched to the app; v3.20:
+// pure black background and nav bar like the app - elevated
+// surfaces #212121, #AAAAAA secondary text, white progress;
+// red survives only as the brand accent).
+#define COL_BG C2D_Color32(0, 0, 0, 255)
 #define COL_WHITE C2D_Color32(255, 255, 255, 255)
 #define COL_DIM C2D_Color32(170, 170, 170, 255)
 #define COL_FAINT C2D_Color32(113, 113, 113, 255)
 #define COL_ACCENT C2D_Color32(255, 0, 0, 255)
 #define COL_RULE C2D_Color32(45, 45, 45, 255)
 #define COL_SURFACE C2D_Color32(33, 33, 33, 255)
-#define COL_NAV C2D_Color32(33, 33, 33, 255)
+#define COL_NAV C2D_Color32(0, 0, 0, 255)
 #define COL_CHIP C2D_Color32(42, 42, 42, 255)
 #define COL_THUMB C2D_Color32(52, 52, 52, 255)
 #define COL_TRACK C2D_Color32(63, 63, 63, 255)
@@ -90,6 +91,21 @@ static void draw_pill(float x, float y, float w, float h, u32 col) {
     C2D_DrawRectSolid(x + h / 2, y, 0.35f, w - h, h, col);
 }
 
+// Rounded rectangle (v3.20: the app's cards and selected rows
+// have soft corners - centre + edge rects + 4 corner circles).
+static void draw_rrect(float x, float y, float w, float h, float r,
+                       u32 col) {
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    C2D_DrawRectSolid(x + r, y, 0.32f, w - 2 * r, h, col);
+    C2D_DrawRectSolid(x, y + r, 0.32f, r, h - 2 * r, col);
+    C2D_DrawRectSolid(x + w - r, y + r, 0.32f, r, h - 2 * r, col);
+    C2D_DrawCircleSolid(x + r, y + r, 0.32f, r, col);
+    C2D_DrawCircleSolid(x + w - r, y + r, 0.32f, r, col);
+    C2D_DrawCircleSolid(x + r, y + h - r, 0.32f, r, col);
+    C2D_DrawCircleSolid(x + w - r, y + h - r, 0.32f, r, col);
+}
+
 // Thumbnail (or placeholder block) at x,y drawn size x size.
 static void draw_thumb(int bank, int idx, float x, float y, float size,
                        int is_playing) {
@@ -99,8 +115,8 @@ static void draw_thumb(int bank, int idx, float x, float y, float size,
         C2D_DrawImageAt(*img, x, y, 0.4f, NULL, size / d, size / d);
         return;
     }
-    C2D_DrawRectSolid(x, y, 0.35f, size, size,
-                      is_playing ? COL_ACCENT : COL_THUMB);
+    draw_rrect(x, y, size, size, size * 0.14f,
+               is_playing ? COL_ACCENT : COL_THUMB);
     draw_icon(ICON_MUSIC_NOTE, x + size * 0.22f, y + size * 0.22f,
               size * 0.56f, COL_DIM);
 }
@@ -115,13 +131,14 @@ static void draw_progress(float x, float y, float w, int pct) {
 }
 
 // ---------- top screen: song list (home / library) ----------
-#define ROW_H 32.0f
+// v3.20: chunkier rows and bigger chips, closer to the app.
+#define ROW_H 34.0f
 #define ROWS_VISIBLE 4
-#define LIST_TOP 104.0f
+#define LIST_TOP 90.0f
 
 static void draw_list_scene(void) {
     draw_logo(10, 8);
-    txt(356, 14, 0.45f, COL_FAINT, "v3.16");
+    txt(356, 14, 0.45f, COL_FAINT, "v" APP_VER);
     // Chips row: context chip + count chip + quality chip.
     char chip[112];
     if (list_tab() == TAB_LIBRARY)
@@ -132,26 +149,26 @@ static void draw_list_scene(void) {
         snprintf(chip, sizeof(chip), "%s", qt);
     } else
         snprintf(chip, sizeof(chip), "おすすめ");
-    draw_pill(10, 40, 150, 20, COL_SURFACE);
-    txt(22, 43, 0.44f, COL_WHITE, chip);
+    draw_pill(10, 38, 150, 24, COL_SURFACE);
+    txt(24, 43, 0.48f, COL_WHITE, chip);
     char cnt[24];
     snprintf(cnt, sizeof(cnt), "%d 曲", act_count());
-    draw_pill(170, 40, 74, 20, COL_SURFACE);
-    txt(182, 43, 0.44f, COL_DIM, cnt);
-    draw_pill(254, 40, 110, 20, COL_SURFACE);
-    txt(266, 43, 0.44f, COL_DIM,
+    draw_pill(168, 38, 74, 24, COL_SURFACE);
+    txt(182, 43, 0.48f, COL_WHITE, cnt);
+    draw_pill(250, 38, 114, 24, COL_SURFACE);
+    txt(264, 43, 0.48f, COL_WHITE,
         g_quality == 0 ? "音質: 低" : g_quality == 2 ? "音質: 高" : "音質: 標準");
     // Section title.
     if (list_tab() == TAB_LIBRARY)
-        txt(12, 68, 0.72f, COL_WHITE, "ライブラリ");
+        txt(12, 66, 0.7f, COL_WHITE, "ライブラリ");
     else if (g_query[0]) {
         char qt[80];
         char st[96];
         utf8_truncate(g_query, qt, sizeof(qt), 66);
         snprintf(st, sizeof(st), "「%s」の結果", qt);
-        txt(12, 68, 0.72f, COL_WHITE, st);
+        txt(12, 66, 0.7f, COL_WHITE, st);
     } else
-        txt(12, 68, 0.72f, COL_WHITE, "おすすめ");
+        txt(12, 66, 0.7f, COL_WHITE, "おすすめ");
     if (act_count() == 0) {
         txt(12, LIST_TOP + 6, 0.55f, COL_WHITE,
             list_tab() == TAB_LIBRARY ? "お気に入りはまだありません"
@@ -176,28 +193,28 @@ static void draw_list_scene(void) {
              strcmp(act_at(i)->id, g_np_song.id) == 0 &&
              list_tab() == g_playing_tab);
         if (is_sel)
-            C2D_DrawRectSolid(6, y, 0.3f, 388, ROW_H - 4, COL_SURFACE);
-        draw_thumb(act_bank(), i, 12, y + 1, 26, is_playing);
+            draw_rrect(6, y, 388, ROW_H - 4, 7, COL_SURFACE);
+        draw_thumb(act_bank(), i, 12, y + 1, 28, is_playing);
         if (is_playing) {
-            C2D_DrawRectSolid(42, y + 12, 0.4f, 3, 8, COL_WHITE);
-            C2D_DrawRectSolid(47, y + 7, 0.4f, 3, 13, COL_WHITE);
-            C2D_DrawRectSolid(52, y + 14, 0.4f, 3, 6, COL_WHITE);
+            C2D_DrawRectSolid(46, y + 13, 0.4f, 3, 8, COL_WHITE);
+            C2D_DrawRectSolid(51, y + 8, 0.4f, 3, 13, COL_WHITE);
+            C2D_DrawRectSolid(56, y + 15, 0.4f, 3, 6, COL_WHITE);
         }
         char t[128];
         utf8_truncate(act_at(i)->title, t, sizeof(t), 76);
-        txt(60, y + 0, 0.5f, is_playing ? COL_ACCENT : COL_WHITE, t);
+        txt(66, y + 1, 0.52f, is_playing ? COL_ACCENT : COL_WHITE, t);
         if (act_at(i)->sub[0]) {
             char s[128];
             utf8_truncate(act_at(i)->sub, s, sizeof(s), 84);
-            txt(60, y + 15, 0.38f, COL_DIM, s);
+            txt(66, y + 18, 0.4f, COL_DIM, s);
         }
         if (fav_find(act_at(i)->id) >= 0)
-            draw_icon(ICON_BOOKMARK, 376, y + 5, 16, COL_ACCENT);
+            draw_icon(ICON_BOOKMARK, 374, y + 6, 18, COL_ACCENT);
     }
     if (act_count() > ROWS_VISIBLE) {
         char pg[32];
         snprintf(pg, sizeof(pg), "%d / %d", g_selected + 1, act_count());
-        txt(348, 222, 0.42f, COL_FAINT, pg);
+        txt(348, 228, 0.42f, COL_FAINT, pg);
     }
     // Incremental thumbnail fetch progress (v3.8).
     if (g_tq_bank >= 0 && g_tq_bank == act_bank()) {
@@ -213,7 +230,7 @@ static void draw_list_scene(void) {
             snprintf(pr, sizeof(pr),
                      "サムネイル取得中 %d/%d（スレッド未動作）", have,
                      total);
-        txt(12, 222, 0.42f, COL_FAINT, pr);
+        txt(12, 228, 0.42f, COL_FAINT, pr);
     }
 }
 
@@ -229,23 +246,23 @@ static void draw_settings_scene(void) {
     txt(12, 44, 0.72f, COL_WHITE, "設定");
     float y = 76;
     if (g_set_sel == 0)
-        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 34, COL_SURFACE);
+        draw_rrect(6, y - 4, 388, 34, 8, COL_SURFACE);
     txt(14, y, 0.55f, COL_WHITE, "音質");
     txt(190, y, 0.55f, COL_ACCENT, quality_name());
     y += 37;
     if (g_set_sel == 1)
-        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 34, COL_SURFACE);
+        draw_rrect(6, y - 4, 388, 34, 8, COL_SURFACE);
     txt(14, y, 0.55f, COL_WHITE, "サムネイル表示");
     txt(190, y, 0.55f, COL_ACCENT, g_thumbs_on ? "オン" : "オフ");
     y += 37;
     if (g_set_sel == 2)
-        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 34, COL_SURFACE);
+        draw_rrect(6, y - 4, 388, 34, 8, COL_SURFACE);
     txt(14, y, 0.55f, COL_WHITE, "アップデート");
     txt(190, y, 0.55f, COL_ACCENT,
         g_update_msg[0] ? g_update_msg : "A：確認する");
     y += 37;
     if (g_set_sel == 3)
-        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 34, COL_SURFACE);
+        draw_rrect(6, y - 4, 388, 34, 8, COL_SURFACE);
     txt(14, y, 0.55f, COL_WHITE, "フリック入力");
     txt(190, y, 0.55f, COL_ACCENT, g_kana_on ? "オン" : "オフ");
     y += 40;
@@ -353,11 +370,11 @@ static void draw_bottom_player(void) {
     }
     char t[96];
     utf8_truncate(g_np_song.title, t, sizeof(t), 48);
-    txt(8, 6, 0.62f, COL_WHITE, t);
+    txt(8, 4, 0.68f, COL_WHITE, t);
     if (g_np_song.sub[0]) {
         char s[128];
         utf8_truncate(g_np_song.sub, s, sizeof(s), 62);
-        txt(8, 32, 0.46f, COL_DIM, s);
+        txt(8, 31, 0.48f, COL_DIM, s);
     }
     // Pills: like (icon + count) / bad (icon only) / lyrics
     // (icon only; v3.16 user request - no text labels, and the
@@ -441,7 +458,11 @@ static void draw_nav(void) {
         float x = t * 80.0f;
         int is_active = (t == active);
         u32 col = is_active ? COL_WHITE : COL_DIM;
-        draw_icon(tab_icons[t], x + 28, NAV_TOP + 5, 24, col);
+        // Like the app: the active tab's icon is the filled
+        // variant (only the bookmark has a pair in our set).
+        int icon = tab_icons[t];
+        if (is_active && t == TAB_LIBRARY) icon = ICON_BOOKMARK;
+        draw_icon(icon, x + 28, NAV_TOP + 5, 24, col);
         float lx = x + (t == TAB_LIBRARY ? 14 : 22);
         txt(lx, NAV_TOP + 33, 0.42f, col, labels[t]);
     }
@@ -453,19 +474,19 @@ static void draw_mini_player(void) {
     if (!g_has_np) return;
     C2D_DrawRectSolid(0, MINI_TOP, 0.3f, 320, PROG_TOP - MINI_TOP,
                       COL_SURFACE);
-    draw_thumb(THUMB_BANK_NP, 0, 8, MINI_TOP + 6, 40, 0);
+    draw_thumb(THUMB_BANK_NP, 0, 8, MINI_TOP + 6, 44, 0);
     char t[96];
     utf8_truncate(g_np_song.title, t, sizeof(t), 44);
-    txt(56, MINI_TOP + 7, 0.5f, COL_WHITE, t);
+    txt(60, MINI_TOP + 8, 0.52f, COL_WHITE, t);
     if (g_np_song.sub[0]) {
         char s[128];
         utf8_truncate(g_np_song.sub, s, sizeof(s), 50);
-        txt(56, MINI_TOP + 28, 0.4f, COL_DIM, s);
+        txt(60, MINI_TOP + 31, 0.42f, COL_DIM, s);
     }
     int playing_now = g_playback_view && g_ctl.phase == PHASE_PLAY &&
                       !g_ctl.paused;
     draw_icon(playing_now ? ICON_PAUSE : ICON_PLAY_ARROW, 274,
-              MINI_TOP + 10, 32, COL_WHITE);
+              MINI_TOP + 12, 32, COL_WHITE);
     // Progress strip between the mini player and the tab bar.
     int pct = 0;
     if (g_playback_view && g_ctl.phase == PHASE_DOWNLOAD) {

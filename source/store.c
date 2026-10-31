@@ -39,10 +39,32 @@ void favs_save(void) {
     fclose(f);
 }
 
+// Previous versions' data folders, newest first. The first
+// run of a new build imports favourites/config from whichever
+// of these actually has the file (v3.20: the old single-folder
+// fallback could resurrect stale data after several OTA hops).
+static const char *legacy_dirs[] = {
+    "ytmusic3ds-v3.19", "ytmusic3ds-v3.18", "ytmusic3ds-v3.17",
+    "ytmusic3ds-v3.16", "ytmusic3ds-v3.15", "ytmusic3ds-v3.14",
+    "ytmusic3ds-v3.13", "ytmusic3ds-v3.12", "ytmusic3ds-v3.11",
+};
+
+static FILE *fopen_legacy(const char *name) {
+    char path[320];
+    for (size_t i = 0; i < sizeof(legacy_dirs) / sizeof(legacy_dirs[0]);
+         i++) {
+        snprintf(path, sizeof(path), "sdmc:/3ds/%s/%s",
+                 legacy_dirs[i], name);
+        FILE *f = fopen(path, "r");
+        if (f) return f;
+    }
+    return NULL;
+}
+
 void favs_load(void) {
     g_fav_count = 0;
     FILE *f = fopen(FAV_PATH, "r");
-    if (!f) f = fopen(LEGACY_FAV_PATH, "r");
+    if (!f) f = fopen_legacy("favorites.txt");
     if (!f) return;
     char line[VID_LEN + TITLE_LEN + SUB_LEN + 8];
     while (g_fav_count < THUMB_MAX_FAVS && fgets(line, sizeof(line), f)) {
@@ -110,7 +132,7 @@ void config_load(void) {
             sizeof(g_update_url) - 1);
     g_update_url[sizeof(g_update_url) - 1] = '\0';
     FILE *f = fopen(CFG_PATH, "r");
-    if (!f) f = fopen(LEGACY_CFG_PATH, "r");
+    if (!f) f = fopen_legacy("config.txt");
     if (!f) return;
     char line[512];
     while (fgets(line, sizeof(line), f)) {

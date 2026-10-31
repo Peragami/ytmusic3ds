@@ -20,14 +20,14 @@
 #include "thumb.h"  // THUMB_MAX_*
 
 // ---------- paths ----------
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.19"
+#define APP_VER "3.20"
+#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.20"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
-// The previous version's folder: favourites and config are
-// imported from there on first run.
-#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.16/favorites.txt"
-#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.16/config.txt"
+// Previous versions' folders: favourites and config are
+// imported from the newest one that has them (store.c tries
+// each in order).
 
 // v3.12: the update manifest URL is baked in (config.txt can
 // still override it). Distribution lives in the dist/ folder of
@@ -42,14 +42,14 @@
 #define TAB_SETTINGS 3
 
 // ---------- colours (YouTube Music palette) ----------
-#define COL_BG C2D_Color32(3, 3, 3, 255)
+#define COL_BG C2D_Color32(0, 0, 0, 255)
 #define COL_WHITE C2D_Color32(255, 255, 255, 255)
 #define COL_DIM C2D_Color32(170, 170, 170, 255)
 #define COL_FAINT C2D_Color32(113, 113, 113, 255)
 #define COL_ACCENT C2D_Color32(255, 0, 0, 255)
 #define COL_RULE C2D_Color32(45, 45, 45, 255)
 #define COL_SURFACE C2D_Color32(33, 33, 33, 255)
-#define COL_NAV C2D_Color32(33, 33, 33, 255)
+#define COL_NAV C2D_Color32(0, 0, 0, 255)
 #define COL_CHIP C2D_Color32(42, 42, 42, 255)
 #define COL_THUMB C2D_Color32(52, 52, 52, 255)
 #define COL_TRACK C2D_Color32(63, 63, 63, 255)

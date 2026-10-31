@@ -12,7 +12,7 @@ extern C2D_TextBuf g_textbuf;
 // Bottom-screen layout bands (v3.7): mini player, its
 // progress strip, and the tab bar.
 #define NAV_TOP 188.0f
-#define MINI_TOP 133.0f
+#define MINI_TOP 128.0f
 #define PROG_TOP 185.0f
 
 void txt(float x, float y, float scale, u32 color, const char *str);
