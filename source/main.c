@@ -1,4 +1,11 @@
-// ytmusic3ds v3.12 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.13 - YouTube Music style client for (Old) 3DS.
+//
+// v3.13 changes over v3.12 (user request, 2026-10-31):
+//   - Smartphone-style search input: a flick/toggle kana
+//     keyboard on the bottom screen (tap repeatedly to cycle,
+//     flick for direct input, dakuten/small/case transform key,
+//     ABC mode included). Settings gains a フリック入力 on/off
+//     row (config key kana=); off restores the system keyboard.
 //
 // v3.12 changes over v3.11 (2026-10-31):
 //   - The update manifest URL (the dist/version.json in the
@@ -85,7 +92,7 @@
 //     (Home / Search / Library / Settings) at the bottom, tappable
 //     via the touch screen (L/R also switch tabs).
 //   - Library tab = favourites stored on the SD card
-//     (sdmc:/3ds/ytmusic3ds-v3.12/favorites.txt). X toggles a song
+//     (sdmc:/3ds/ytmusic3ds-v3.13/favorites.txt). X toggles a song
 //     as favourite; favourites can be played like search results.
 //   - Settings tab: sound quality (itag preference order in net.c)
 //     and thumbnail on/off, persisted to config.txt on the SD card.
@@ -112,7 +119,7 @@
 #include "lyrics.h"
 #include "updater.h"
 
-#define APP_VER "3.12"
+#define APP_VER "3.13"
 
 // v3.12: the update manifest URL is baked in (config.txt can
 // still override it). Distribution lives in the dist/ folder of
@@ -162,6 +169,7 @@ static int g_deferred_pending = 0;
 
 // ---------- settings (persisted) ----------
 static int g_thumbs_on = 1; // g_quality lives in net.c
+static int g_kana_on = 1;   // v3.13: flick/toggle keyboard
 static int g_set_sel = 0;
 
 // ---------- incremental thumbnail fetching (v3.8) ----------
@@ -173,14 +181,14 @@ static int g_tq_next = 0;
 static int g_tq_total = 0;
 static int g_tq_favs_dirty = 0; // favourites bank was invalidated
 
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.12"
+#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.13"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
 // v3.5 stored its data in its own version folder; import from
 // there when the v3.6 files do not exist yet.
-#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.11/favorites.txt"
-#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.11/config.txt"
+#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.12/favorites.txt"
+#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.12/config.txt"
 
 // ---------- favourites ----------
 static result_t g_favs[THUMB_MAX_FAVS];
@@ -275,6 +283,7 @@ static void config_save(void) {
     if (!f) return;
     fprintf(f, "quality=%d\nthumbs=%d\nshuffle=%d\nrepeat=%d\n",
             g_quality, g_thumbs_on, g_shuffle, g_repeat);
+    fprintf(f, "kana=%d\n", g_kana_on);
     if (g_update_url[0]) fprintf(f, "update_url=%s\n", g_update_url);
     fclose(f);
 }
@@ -300,6 +309,8 @@ static void config_load(void) {
             g_thumbs_on = v ? 1 : 0;
         else if (sscanf(line, "shuffle=%d", &v) == 1)
             g_shuffle = v ? 1 : 0;
+        else if (sscanf(line, "kana=%d", &v) == 1)
+            g_kana_on = v ? 1 : 0;
         else if (sscanf(line, "repeat=%d", &v) == 1 && v >= 0 && v <= 2)
             g_repeat = v;
     }
@@ -459,7 +470,7 @@ static void draw_progress(float x, float y, float w, int pct) {
 
 static void draw_list_scene(void) {
     draw_logo(10, 8);
-    txt(356, 14, 0.45f, COL_FAINT, "v3.12");
+    txt(356, 14, 0.45f, COL_FAINT, "v3.13");
     // Chips row: context chip + count chip + quality chip.
     char chip[112];
     if (list_tab() == TAB_LIBRARY)
@@ -559,26 +570,32 @@ static const char *quality_name(void) {
 static void draw_settings_scene(void) {
     draw_logo(10, 8);
     txt(12, 44, 0.72f, COL_WHITE, "設定");
-    float y = 84;
+    float y = 76;
     if (g_set_sel == 0)
-        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 40, COL_SURFACE);
+        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 34, COL_SURFACE);
     txt(14, y, 0.55f, COL_WHITE, "音質");
     txt(190, y, 0.55f, COL_ACCENT, quality_name());
-    y += 44;
+    y += 37;
     if (g_set_sel == 1)
-        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 40, COL_SURFACE);
+        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 34, COL_SURFACE);
     txt(14, y, 0.55f, COL_WHITE, "サムネイル表示");
     txt(190, y, 0.55f, COL_ACCENT, g_thumbs_on ? "オン" : "オフ");
-    y += 44;
+    y += 37;
     if (g_set_sel == 2)
-        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 40, COL_SURFACE);
+        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 34, COL_SURFACE);
     txt(14, y, 0.55f, COL_WHITE, "アップデート");
     txt(190, y, 0.55f, COL_ACCENT,
         g_update_msg[0] ? g_update_msg : "A：確認する");
-    y += 46;
-    txt(14, y, 0.48f, COL_DIM, "十字キー上下: 項目   左右/A: 変更");
-    y += 22;
-    txt(14, y, 0.48f, COL_FAINT, "ytmusic3ds v3.12 / Old 3DS");
+    y += 37;
+    if (g_set_sel == 3)
+        C2D_DrawRectSolid(6, y - 4, 0.3f, 388, 34, COL_SURFACE);
+    txt(14, y, 0.55f, COL_WHITE, "フリック入力");
+    txt(190, y, 0.55f, COL_ACCENT, g_kana_on ? "オン" : "オフ");
+    y += 40;
+    txt(14, y, 0.46f, COL_DIM, "十字キー上下: 項目   左右/A: 変更");
+    y += 20;
+    txt(14, y, 0.46f, COL_FAINT,
+        "オフにすると本体のキーボードを使います");
 }
 
 // ---------- v3.6 player screen ----------
@@ -1114,8 +1131,351 @@ static void fetch_fav_thumbs(void) {
     thumb_queue_start(THUMB_BANK_FAVS);
 }
 
+// ---------- v3.13 flick / toggle kana keyboard ----------
+// Smartphone-style input on the bottom screen, replacing the
+// system keyboard when enabled in Settings. Tap a key repeatedly
+// to cycle its characters (toggle input); flick up/down/left/
+// right to pick a character directly. The side column holds
+// delete, the dakuten/small/case transform, space and confirm.
+typedef struct {
+    const char *ch[10];
+    int n;
+    const char *label;
+} kkey_t;
+
+static const kkey_t KANA_KEYS[12] = {
+    {{"あ", "い", "う", "え", "お"}, 5, "あ"},
+    {{"か", "き", "く", "け", "こ"}, 5, "か"},
+    {{"さ", "し", "す", "せ", "そ"}, 5, "さ"},
+    {{"た", "ち", "つ", "て", "と"}, 5, "た"},
+    {{"な", "に", "ぬ", "ね", "の"}, 5, "な"},
+    {{"は", "ひ", "ふ", "へ", "ほ"}, 5, "は"},
+    {{"ま", "み", "む", "め", "も"}, 5, "ま"},
+    {{"や", "（", "ゆ", "）", "よ"}, 5, "や"},
+    {{"ら", "り", "る", "れ", "ろ"}, 5, "ら"},
+    {{NULL}, 0, "ABC"},
+    {{"わ", "を", "ん", "ー", "～"}, 5, "わ"},
+    {{"、", "。", "？", "！", "・"}, 5, "、"},
+};
+
+static const kkey_t ABC_KEYS[12] = {
+    {{"a", "b", "c"}, 3, "ABC"},
+    {{"d", "e", "f"}, 3, "DEF"},
+    {{"g", "h", "i"}, 3, "GHI"},
+    {{"j", "k", "l"}, 3, "JKL"},
+    {{"m", "n", "o"}, 3, "MNO"},
+    {{"p", "q", "r", "s"}, 4, "PQRS"},
+    {{"t", "u", "v"}, 3, "TUV"},
+    {{"w", "x", "y", "z"}, 4, "WXYZ"},
+    {{"@", "#", "*", "/", "_"}, 5, "@#"},
+    {{NULL}, 0, "あ"},
+    {{"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"}, 10, "123"},
+    {{".", ",", "?", "!", "'"}, 5, ".,"},
+};
+
+// Dakuten / small-kana transform chains (the transform key
+// advances the last character within its chain).
+static const char *const DAKU_CHAINS[][5] = {
+    {"あ", "ぁ", NULL}, {"い", "ぃ", NULL}, {"う", "ゔ", "ぅ", NULL},
+    {"え", "ぇ", NULL}, {"お", "ぉ", NULL}, {"か", "が", NULL},
+    {"き", "ぎ", NULL}, {"く", "ぐ", NULL}, {"け", "げ", NULL},
+    {"こ", "ご", NULL}, {"さ", "ざ", NULL}, {"し", "じ", NULL},
+    {"す", "ず", NULL}, {"せ", "ぜ", NULL}, {"そ", "ぞ", NULL},
+    {"た", "だ", NULL}, {"ち", "ぢ", NULL}, {"つ", "づ", "っ", NULL},
+    {"て", "で", NULL}, {"と", "ど", NULL}, {"は", "ば", "ぱ", NULL},
+    {"ひ", "び", "ぴ", NULL}, {"ふ", "ぶ", "ぷ", NULL},
+    {"へ", "べ", "ぺ", NULL}, {"ほ", "ぼ", "ぽ", NULL},
+    {"や", "ゃ", NULL}, {"ゆ", "ゅ", NULL}, {"よ", "ょ", NULL},
+    {"わ", "ゎ", NULL},
+};
+#define DAKU_COUNT (sizeof(DAKU_CHAINS) / sizeof(DAKU_CHAINS[0]))
+
+#define KB_KEY_W 74
+#define KB_KEY_H 41
+#define KB_GX(i) (4 + ((i) % 3) * 78)
+#define KB_GY(i) (44 + ((i) / 3) * 45)
+#define KB_SX 242
+
+static float txtw(const char *str, float scale) {
+    if (!str || !str[0]) return 0;
+    C2D_Text t;
+    C2D_TextFontParse(&t, g_font, g_textbuf, str);
+    float w = 0, h = 0;
+    C2D_TextGetDimensions(&t, scale, scale, &w, &h);
+    return w;
+}
+
+static const char *tail_fit(const char *s, float scale, float maxw) {
+    while (*s && txtw(s, scale) > maxw) {
+        s++;
+        while ((*s & 0xC0) == 0x80) s++;
+    }
+    return s;
+}
+
+// Start/length of the last UTF-8 character in buf (-1 if empty).
+static int last_char_span(const char *buf, int *start) {
+    int len = (int)strlen(buf);
+    if (len == 0) return -1;
+    int s = len - 1;
+    while (s > 0 && (buf[s] & 0xC0) == 0x80) s--;
+    *start = s;
+    return len - s;
+}
+
+static void kana_append(char *buf, const char *s, size_t cap) {
+    if (strlen(buf) + strlen(s) < cap) strcat(buf, s);
+}
+
+static void kana_replace_last(char *buf, const char *s, size_t cap) {
+    int start;
+    int cl = last_char_span(buf, &start);
+    if (cl < 0) {
+        kana_append(buf, s, cap);
+        return;
+    }
+    buf[start] = '\0';
+    kana_append(buf, s, cap);
+}
+
+static void kana_backspace(char *buf) {
+    int start;
+    if (last_char_span(buf, &start) >= 0) buf[start] = '\0';
+}
+
+static void kana_cycle(char *buf, const kkey_t *k, size_t cap) {
+    int start;
+    int cl = last_char_span(buf, &start);
+    if (cl < 0) return;
+    char cur[8];
+    if (cl > 7) return;
+    memcpy(cur, buf + start, cl);
+    cur[cl] = '\0';
+    for (int i = 0; i < k->n; i++) {
+        if (strcmp(cur, k->ch[i]) == 0) {
+            kana_replace_last(buf, k->ch[(i + 1) % k->n], cap);
+            return;
+        }
+    }
+    kana_replace_last(buf, k->ch[0], cap);
+}
+
+static void kana_transform(char *buf, int mode, size_t cap) {
+    int start;
+    int cl = last_char_span(buf, &start);
+    if (cl < 0) return;
+    char cur[8];
+    if (cl > 7) return;
+    memcpy(cur, buf + start, cl);
+    cur[cl] = '\0';
+    if (mode == 1) { // ABC: toggle the case of the last letter
+        if (cl == 1 && cur[0] >= 'a' && cur[0] <= 'z') {
+            cur[0] -= 'a' - 'A';
+            kana_replace_last(buf, cur, cap);
+        } else if (cl == 1 && cur[0] >= 'A' && cur[0] <= 'Z') {
+            cur[0] += 'a' - 'A';
+            kana_replace_last(buf, cur, cap);
+        }
+        return;
+    }
+    for (size_t c = 0; c < DAKU_COUNT; c++) {
+        int n = 0;
+        while (DAKU_CHAINS[c][n]) n++;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(cur, DAKU_CHAINS[c][i]) == 0) {
+                kana_replace_last(buf, DAKU_CHAINS[c][(i + 1) % n],
+                                  cap);
+                return;
+            }
+        }
+    }
+}
+
+// Which key is at (x, y)? Returns 1 and fills idx/is_side.
+static int kb_key_at(int x, int y, int *is_side, int *idx) {
+    for (int i = 0; i < 12; i++) {
+        int kx = KB_GX(i), ky = KB_GY(i);
+        if (x >= kx && x < kx + KB_KEY_W && y >= ky &&
+            y < ky + KB_KEY_H) {
+            *is_side = 0;
+            *idx = i;
+            return 1;
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        int ky = KB_GY(i * 3);
+        if (x >= KB_SX && x < KB_SX + KB_KEY_W && y >= ky &&
+            y < ky + KB_KEY_H) {
+            *is_side = 1;
+            *idx = i;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void kana_render(const char *buf, int mode, int active,
+                        int dir, int pending) {
+    const u32 COL_HL = C2D_Color32(58, 58, 58, 255);
+    const kkey_t *keys = mode ? ABC_KEYS : KANA_KEYS;
+    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    C2D_TextBufClear(g_textbuf);
+    // ---- top screen: the text so far + how to use ----
+    C2D_TargetClear(g_top_tgt, COL_BG);
+    C2D_SceneBegin(g_top_tgt);
+    txt(12, 14, 0.7f, COL_WHITE, "検索");
+    txt(12, 62, 0.78f, COL_WHITE, tail_fit(buf, 0.78f, 372));
+    if (!buf[0]) txt(12, 62, 0.6f, COL_FAINT, "キーワードを入力");
+    txt(12, 128, 0.48f, COL_DIM,
+        "タップ連打： トグル入力　フリック： 上下左右");
+    txt(12, 154, 0.48f, COL_DIM,
+        mode ? "大小キー： 大文字/小文字　B： もどる"
+             : "゛゜小キー： 濁点・小文字　B： もどる");
+    txt(12, 180, 0.48f, COL_DIM, "START / 確定キー： 検索する");
+    // ---- bottom screen: keyboard ----
+    C2D_TargetClear(g_bot_tgt, COL_BG);
+    C2D_SceneBegin(g_bot_tgt);
+    C2D_DrawRectSolid(0, 0, 0.3f, 320, 40, COL_SURFACE);
+    txt(8, 9, 0.55f, COL_WHITE, tail_fit(buf, 0.55f, 290));
+    if (pending >= 0)
+        C2D_DrawRectSolid(312, 8, 0.4f, 3, 24, COL_ACCENT);
+    for (int i = 0; i < 12; i++) {
+        int kx = KB_GX(i), ky = KB_GY(i);
+        C2D_DrawRectSolid(kx, ky, 0.3f, KB_KEY_W, KB_KEY_H,
+                          i == active ? COL_HL : COL_SURFACE);
+        float sc = strlen(keys[i].label) > 2 ? 0.5f : 0.62f;
+        float w = txtw(keys[i].label, sc);
+        txt(kx + (KB_KEY_W - w) / 2, ky + 8, sc, COL_WHITE,
+            keys[i].label);
+    }
+    static const char *SIDE_KANA[4] = {"削除", "゛゜小", "空白", "確定"};
+    static const char *SIDE_ABC[4] = {"削除", "大小", "空白", "確定"};
+    const char *const *side = mode ? SIDE_ABC : SIDE_KANA;
+    for (int i = 0; i < 4; i++) {
+        int ky = KB_GY(i * 3);
+        u32 fill = i == 3 ? COL_ACCENT : COL_SURFACE;
+        C2D_DrawRectSolid(KB_SX, ky, 0.3f, KB_KEY_W, KB_KEY_H, fill);
+        float w = txtw(side[i], 0.55f);
+        txt(KB_SX + (KB_KEY_W - w) / 2, ky + 9, 0.55f, COL_WHITE,
+            side[i]);
+    }
+    txt(6, 226, 0.38f, COL_FAINT, "B：もどる　X：削除");
+    // ---- flick preview popup ----
+    if (active >= 0 && active != 9) {
+        const kkey_t *k = &keys[active];
+        const char *pc = (dir >= 1 && dir < k->n) ? k->ch[dir]
+                                                  : k->ch[0];
+        int kx = KB_GX(active), ky = KB_GY(active);
+        int px = kx + KB_KEY_W / 2 - 26;
+        int py = ky - 50 >= 2 ? ky - 50 : ky + KB_KEY_H + 4;
+        C2D_DrawRectSolid(px, py, 0.45f, 52, 44, COL_HL);
+        float w = txtw(pc, 0.95f);
+        txt(px + (52 - w) / 2, py + 4, 0.95f, COL_WHITE, pc);
+    }
+    C3D_FrameEnd(0);
+}
+
+static int kana_prompt(void) {
+    char buf[sizeof(g_query)];
+    strncpy(buf, g_query, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    int mode = 0;    // 0 kana / 1 ABC
+    int pending = -1; // grid key whose char can still be cycled
+    int t_active = 0, t_key = -1, t_sx = 0, t_sy = 0, t_dir = 0;
+    while (aptMainLoop()) {
+        hidScanInput();
+        u32 kd = hidKeysDown();
+        u32 kh = hidKeysHeld();
+        if (kd & KEY_B) return -1;
+        if ((kd & KEY_START) && buf[0]) {
+            strncpy(g_query, buf, sizeof(g_query) - 1);
+            g_query[sizeof(g_query) - 1] = '\0';
+            return 0;
+        }
+        if (kd & KEY_X) {
+            kana_backspace(buf);
+            pending = -1;
+        }
+        touchPosition tp;
+        hidTouchRead(&tp);
+        int touching = (kh & KEY_TOUCH) != 0;
+        if (touching && !t_active) {
+            t_active = 1;
+            t_sx = tp.px;
+            t_sy = tp.py;
+            t_dir = 0;
+            t_key = -1;
+            int is_side = 0, idx = -1;
+            if (kb_key_at(tp.px, tp.py, &is_side, &idx)) {
+                if (is_side) {
+                    // Side keys act on press.
+                    if (idx == 0) {
+                        kana_backspace(buf);
+                        pending = -1;
+                    } else if (idx == 1) {
+                        kana_transform(buf, mode, sizeof(buf));
+                        pending = -1;
+                    } else if (idx == 2) {
+                        kana_append(buf, " ", sizeof(buf));
+                        pending = -1;
+                    } else if (idx == 3 && buf[0]) {
+                        strncpy(g_query, buf,
+                                sizeof(g_query) - 1);
+                        g_query[sizeof(g_query) - 1] = '\0';
+                        return 0;
+                    }
+                } else {
+                    t_key = idx;
+                }
+            }
+        } else if (touching && t_active && t_key >= 0) {
+            int dx = tp.px - t_sx, dy = tp.py - t_sy;
+            if (dx * dx + dy * dy < 14 * 14)
+                t_dir = 0;
+            else if (abs(dx) > abs(dy))
+                t_dir = dx > 0 ? 3 : 1;
+            else
+                t_dir = dy > 0 ? 4 : 2;
+        } else if (!touching && t_active) {
+            t_active = 0;
+            if (t_key >= 0) {
+                if (t_key == 9) {
+                    mode = !mode;
+                    pending = -1;
+                } else {
+                    const kkey_t *k =
+                        &(mode ? ABC_KEYS : KANA_KEYS)[t_key];
+                    if (t_dir == 0) {
+                        if (pending == t_key)
+                            kana_cycle(buf, k, sizeof(buf));
+                        else
+                            kana_append(buf, k->ch[0],
+                                        sizeof(buf));
+                        pending = t_key;
+                    } else {
+                        const char *c = t_dir < k->n
+                                            ? k->ch[t_dir]
+                                            : k->ch[0];
+                        if (pending == t_key)
+                            kana_replace_last(buf, c,
+                                              sizeof(buf));
+                        else
+                            kana_append(buf, c, sizeof(buf));
+                        pending = -1;
+                    }
+                }
+            }
+            t_key = -1;
+            t_dir = 0;
+        }
+        kana_render(buf, mode, t_active ? t_key : -1, t_dir,
+                    pending);
+    }
+    return -1;
+}
+
 // ---------- flows ----------
-static int prompt_query(void) {
+static int prompt_query_swkbd(void) {
     SwkbdState swkbd;
     swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, sizeof(g_query) - 1);
     swkbdSetHintText(&swkbd, "Search YouTube Music");
@@ -1127,6 +1487,10 @@ static int prompt_query(void) {
     strncpy(g_query, buf, sizeof(g_query) - 1);
     g_query[sizeof(g_query) - 1] = '\0';
     return 0;
+}
+
+static int prompt_query(void) {
+    return g_kana_on ? kana_prompt() : prompt_query_swkbd();
 }
 
 static void do_search_flow(void) {
@@ -1563,7 +1927,7 @@ static int do_update_flow(void) {
     char self[340], tmp[360];
     snprintf(self, sizeof(self), "%s",
              g_self_path[0] ? g_self_path
-                            : APP_DIR "/ytmusic3ds-v3.12.3dsx");
+                            : APP_DIR "/ytmusic3ds-v3.13.3dsx");
     snprintf(tmp, sizeof(tmp), "%s/update.tmp", APP_DIR);
     if (updater_apply(&info, self, tmp, upd_cb, err,
                       sizeof(err)) != 0) {
@@ -1696,12 +2060,15 @@ int main(int argc, char **argv) {
                 do_search_flow();
         } else if (g_tab == TAB_SETTINGS) {
             if (k & KEY_DOWN) {
-                if (g_set_sel < 2) g_set_sel++;
+                if (g_set_sel < 3) g_set_sel++;
             } else if (k & KEY_UP) {
                 if (g_set_sel > 0) g_set_sel--;
             } else if (k & (KEY_LEFT | KEY_RIGHT | KEY_A)) {
                 if (g_set_sel == 2) {
                     if (do_update_flow()) exit_now = 1;
+                } else if (g_set_sel == 3) {
+                    g_kana_on = !g_kana_on;
+                    config_save();
                 } else if (g_set_sel == 0) {
                     if (k & KEY_LEFT)
                         g_quality = (g_quality + 2) % 3;
