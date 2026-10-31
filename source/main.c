@@ -1,4 +1,10 @@
-// ytmusic3ds v3.17 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.18 - YouTube Music style client for (Old) 3DS.
+//
+// v3.18 changes over v3.17 (user report, 2026-10-31):
+//   - Thumbnail downloads + JPEG decode now run on a worker
+//     thread; the main thread only uploads finished textures.
+//     The v3.16 input-abort workaround is gone - fetches can
+//     no longer block input or delay playback start at all.
 //
 // v3.17 changes over v3.16 (refactor, user request, 2026-10-31):
 //   - No behaviour change. The old single-file main.c (2,352
@@ -157,7 +163,7 @@
 #include "ui.h"
 #include "updater.h"
 
-#define APP_VER "3.17"
+#define APP_VER "3.18"
 
 // The resolve/playback paths run deep curl + mbedTLS call chains on
 // this thread; give the main stack real headroom (v3.1 crash fix).
@@ -208,6 +214,7 @@ int g_tq_total = 0;
 int g_tq_favs_dirty = 0; // favourites bank was invalidated
 
 static void artist_from_sub(const char *sub, char *out, size_t cap);
+static void thumb_poll(void);
 
 // ---------- playback UI hook ----------
 // Touch actions on the player screen while playing. Zones come
@@ -326,9 +333,13 @@ static void ui_hook(void *user) {
     // v3.9 deferred fetches: HQ artwork and lyrics load here,
     // while the song file downloads, instead of blocking the
     // start of playback. Runs once per song.
+    // HQ artwork loads on the worker thread (v3.18): keep asking
+    // until the job is accepted, and land it via thumb_poll.
+    if (g_thumbs_on && g_has_np && !thumb_get(THUMB_BANK_NP, 0))
+        thumb_job_start(THUMB_BANK_NP, 0, g_np_song.id);
+    thumb_poll();
     if (g_deferred_pending) {
         g_deferred_pending = 0;
-        if (g_thumbs_on) thumb_fetch(THUMB_BANK_NP, 0, g_np_song.id);
         char artist[64];
         artist_from_sub(g_np_song.sub, artist, sizeof(artist));
         g_lyrics_state =
@@ -357,18 +368,40 @@ static void thumb_queue_start(int bank) {
     g_tq_total = bank == THUMB_BANK_FAVS ? g_fav_count : g_result_count;
 }
 
-// Fetch at most one missing thumbnail per call; the main loop
-// calls this every iteration so input stays responsive.
+// Land a finished worker result if it still matches what the
+// UI wants; drop it if the list moved on meanwhile (v3.18).
+static void thumb_poll(void) {
+    if (thumb_job_state() != 2) return;
+    int bank, idx;
+    char id[16];
+    thumb_job_peek(&bank, &idx, id, sizeof(id));
+    int ok = 0;
+    if (bank == THUMB_BANK_NP)
+        ok = g_has_np && strcmp(id, g_np_song.id) == 0;
+    else if (bank == THUMB_BANK_FAVS)
+        ok = idx < g_fav_count && strcmp(id, g_favs[idx].id) == 0;
+    else
+        ok = idx < g_result_count && strcmp(id, g_results[idx].id) == 0;
+    if (ok)
+        thumb_job_commit();
+    else
+        thumb_job_discard();
+}
+
+// Keep at most one fetch queued on the worker thread; the main
+// loop calls this every iteration and it never blocks (v3.18:
+// fetches run on the worker, this only hands out job tickets).
 static void thumb_queue_step(void) {
+    thumb_poll();
     if (g_tq_bank < 0) return;
+    if (thumb_job_state() != 0) return; // worker busy
     int bank = g_tq_bank;
     while (g_tq_next < g_tq_total) {
         int idx = g_tq_next++;
         if (thumb_get(bank, idx)) continue;
-        int rc = thumb_fetch(bank, idx,
-                             bank == THUMB_BANK_FAVS ? g_favs[idx].id
-                                                     : g_results[idx].id);
-        if (rc == 2) g_tq_next--; // interrupted by input: retry
+        thumb_job_start(bank, idx,
+                        bank == THUMB_BANK_FAVS ? g_favs[idx].id
+                                                : g_results[idx].id);
         return;
     }
     g_tq_bank = -1;

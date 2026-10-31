@@ -54,30 +54,8 @@ static size_t mem_write(void *ptr, size_t size, size_t nmemb, void *ud) {
     return total;
 }
 
-// v3.16: abort the transfer the moment the user touches
-// anything, so a slow thumbnail can never lock the UI out (the
-// old fixed 15s timeout could freeze input for that long).
-static int thumb_xfer(void *ud, curl_off_t dt, curl_off_t dn,
-                      curl_off_t ut, curl_off_t un) {
-    (void)ud;
-    (void)dt;
-    (void)dn;
-    (void)ut;
-    (void)un;
-    hidScanInput();
-    u32 h = hidKeysHeld();
-    if (h & (KEY_TOUCH | KEY_A | KEY_B | KEY_X | KEY_Y | KEY_L |
-             KEY_R | KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT |
-             KEY_START | KEY_SELECT))
-        return 1;
-    circlePosition cp;
-    hidCircleRead(&cp);
-    if (cp.dx > 40 || cp.dx < -40 || cp.dy > 40 || cp.dy < -40)
-        return 1;
-    return 0;
-}
-
-// Returns 0 on success, -1 on failure, 2 when aborted by input.
+// Runs on the worker thread since v3.18: a slow fetch costs the
+// UI nothing, so timeouts can stay relaxed.
 static int download_jpeg(const char *video_id, int hq, membuf_t *out) {
     char url[96];
     snprintf(url, sizeof(url), "https://i.ytimg.com/vi/%s/%s.jpg",
@@ -89,17 +67,11 @@ static int download_jpeg(const char *video_id, int hq, membuf_t *out) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, thumb_xfer);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 4L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 12L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     CURLcode res = curl_easy_perform(curl);
-    if (res == CURLE_ABORTED_BY_CALLBACK) {
-        curl_easy_cleanup(curl);
-        return 2;
-    }
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
     curl_easy_cleanup(curl);
@@ -340,43 +312,143 @@ void thumbs_clear_all(void) {
     for (int b = 0; b < 3; b++) thumbs_clear_bank(b);
 }
 
-int thumb_fetch(int bank, int idx, const char *video_id) {
-    if (bank < 0 || bank > 2 || idx < 0 || idx >= bank_cap[bank] ||
-        !video_id || !video_id[0])
-        return -1;
-    if (bank == THUMB_BANK_NP && g_has[bank][0] &&
-        strncmp(g_np_id, video_id, sizeof(g_np_id) - 1) == 0)
-        return 0; // already showing this song's thumbnail
-    clear_slot(bank, idx);
+// Download + decode only (no GPU work). Runs on the worker
+// thread; the main thread uploads via thumb_job_commit.
+static int fetch_decode(int bank, const char *video_id,
+                        uint8_t **rgb_out, int *w_out, int *h_out) {
     membuf_t mb;
     memset(&mb, 0, sizeof(mb));
-    int rc = -1;
-    uint8_t *rgb = NULL;
-    int w = 0, h = 0;
     // The now-playing bank wants the larger hqdefault image; fall
     // back to mqdefault when a video has no usable hq image.
     int dl = download_jpeg(video_id, bank == THUMB_BANK_NP, &mb);
-    if (dl == 2) { // interrupted by input: caller may retry later
-        free(mb.data);
-        return 2;
-    }
     if (dl != 0 && bank == THUMB_BANK_NP) {
         free(mb.data);
         memset(&mb, 0, sizeof(mb));
         dl = download_jpeg(video_id, 0, &mb);
     }
+    int rc = -1;
     if (dl == 0 &&
-        decode_jpeg_rgb(mb.data, mb.len, &rgb, &w, &h) == 0 &&
-        upload_texture(bank, idx, rgb, w, h) == 0) {
+        decode_jpeg_rgb(mb.data, mb.len, rgb_out, w_out, h_out) == 0)
         rc = 0;
-        if (bank == THUMB_BANK_NP) {
-            strncpy(g_np_id, video_id, sizeof(g_np_id) - 1);
-            g_np_id[sizeof(g_np_id) - 1] = '\0';
-        }
-    }
-    free(rgb);
     free(mb.data);
     return rc;
+}
+
+// ---------- background worker (v3.18) ----------
+// One job at a time. The main thread fills the job and publishes
+// state 1; the worker downloads + decodes, then publishes state
+// 3 with the RGB buffer. Only the main thread ever touches GPU
+// textures (commit) or frees the buffer.
+
+typedef struct {
+    volatile int state; // 0 empty / 1 queued / 2 working / 3 done
+    int bank, idx;
+    char id[16];
+    uint8_t *rgb;
+    int w, h, rc;
+} thumb_job_t;
+
+static thumb_job_t g_job;
+static Thread g_worker = NULL;
+static int g_worker_failed = 0;
+
+static void thumb_worker_main(void *arg) {
+    (void)arg;
+    for (;;) {
+        if (g_job.state != 1) {
+            svcSleepThread(8000000LL); // 8 ms
+            continue;
+        }
+        g_job.state = 2;
+        uint8_t *rgb = NULL;
+        int w = 0, h = 0;
+        int rc = fetch_decode(g_job.bank, g_job.id, &rgb, &w, &h);
+        g_job.rgb = rgb;
+        g_job.w = w;
+        g_job.h = h;
+        g_job.rc = rc;
+        __sync_synchronize();
+        g_job.state = 3;
+    }
+}
+
+static void thumb_worker_ensure(void) {
+    if (g_worker || g_worker_failed) return;
+    g_worker = threadCreate(thumb_worker_main, NULL, 128 * 1024,
+                            0x40, -2, true);
+    if (!g_worker) g_worker_failed = 1;
+}
+
+int thumb_job_start(int bank, int idx, const char *video_id) {
+    if (bank < 0 || bank > 2 || idx < 0 || idx >= bank_cap[bank] ||
+        !video_id || !video_id[0])
+        return -1;
+    if (bank == THUMB_BANK_NP && g_has[bank][0] &&
+        strncmp(g_np_id, video_id, sizeof(g_np_id) - 1) == 0)
+        return 1; // already showing this song's artwork
+    if (g_job.state != 0) return -1; // busy
+    thumb_worker_ensure();
+    g_job.bank = bank;
+    g_job.idx = idx;
+    strncpy(g_job.id, video_id, sizeof(g_job.id) - 1);
+    g_job.id[sizeof(g_job.id) - 1] = '\0';
+    g_job.rgb = NULL;
+    g_job.w = g_job.h = 0;
+    g_job.rc = -1;
+    if (!g_worker) {
+        // No thread available: do the work inline (old behaviour)
+        // so the caller still gets its thumbnail eventually.
+        g_job.rc = fetch_decode(bank, g_job.id, &g_job.rgb, &g_job.w,
+                                &g_job.h);
+        g_job.state = 3;
+        return 0;
+    }
+    __sync_synchronize();
+    g_job.state = 1;
+    return 0;
+}
+
+int thumb_job_state(void) {
+    if (g_job.state == 3) return 2;
+    if (g_job.state == 0) return 0;
+    return 1;
+}
+
+void thumb_job_peek(int *bank, int *idx, char *id_out, size_t cap) {
+    if (bank) *bank = g_job.bank;
+    if (idx) *idx = g_job.idx;
+    if (id_out && cap) {
+        strncpy(id_out, g_job.id, cap - 1);
+        id_out[cap - 1] = '\0';
+    }
+}
+
+int thumb_job_commit(void) {
+    if (g_job.state != 3) return -1;
+    int rc = g_job.rc;
+    if (rc == 0) {
+        clear_slot(g_job.bank, g_job.idx);
+        if (upload_texture(g_job.bank, g_job.idx, g_job.rgb, g_job.w,
+                           g_job.h) == 0) {
+            if (g_job.bank == THUMB_BANK_NP) {
+                strncpy(g_np_id, g_job.id, sizeof(g_np_id) - 1);
+                g_np_id[sizeof(g_np_id) - 1] = '\0';
+            }
+        } else {
+            rc = -1;
+        }
+    }
+    free(g_job.rgb);
+    g_job.rgb = NULL;
+    g_job.state = 0;
+    return rc;
+}
+
+void thumb_job_discard(void) {
+    if (g_job.state != 3) return;
+    free(g_job.rgb);
+    g_job.rgb = NULL;
+    g_job.state = 0;
 }
 
 C2D_Image *thumb_get(int bank, int idx) {

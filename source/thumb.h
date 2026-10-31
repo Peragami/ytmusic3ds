@@ -25,10 +25,20 @@
 void thumbs_clear_bank(int bank);
 void thumbs_clear_all(void);
 
-// Download + decode + upload the thumbnail for video_id into the
-// given bank slot. Returns 0 on success; on failure the slot stays
-// empty and -1 is returned.
-int thumb_fetch(int bank, int idx, const char *video_id);
+// ----- background fetch jobs (v3.18) -----
+// Download + decode run on a worker thread so the UI never
+// blocks on thumbnails; only the GPU upload happens on the main
+// thread, when it commits a finished job. One job at a time.
+//
+// thumb_job_start: 0 = accepted, 1 = that art is already loaded,
+// -1 = busy or bad arguments.
+// thumb_job_state: 0 = idle, 1 = working, 2 = finished (ready
+// to peek + commit/discard).
+int thumb_job_start(int bank, int idx, const char *video_id);
+int thumb_job_state(void);
+void thumb_job_peek(int *bank, int *idx, char *id_out, size_t cap);
+int thumb_job_commit(void);
+void thumb_job_discard(void);
 
 // The C2D image for a slot, or NULL when no thumbnail is loaded.
 C2D_Image *thumb_get(int bank, int idx);
