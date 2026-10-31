@@ -31,10 +31,13 @@ void thumbs_clear_all(void);
 // thread, when it commits a finished job. One job at a time.
 //
 // thumb_job_start: 0 = accepted, 1 = that art is already loaded,
-// -1 = busy or bad arguments.
+// -1 = busy or bad arguments, -2 = worker thread unavailable
+// (the job was NOT queued; the caller should retry later).
+// thumb_worker_ok: 1 once the worker thread exists.
 // thumb_job_state: 0 = idle, 1 = working, 2 = finished (ready
 // to peek + commit/discard).
 int thumb_job_start(int bank, int idx, const char *video_id);
+int thumb_worker_ok(void);
 int thumb_job_state(void);
 void thumb_job_peek(int *bank, int *idx, char *id_out, size_t cap);
 int thumb_job_commit(void);

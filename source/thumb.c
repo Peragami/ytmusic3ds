@@ -350,7 +350,9 @@ typedef struct {
 
 static thumb_job_t g_job;
 static Thread g_worker = NULL;
-static int g_worker_failed = 0;
+static u64 g_worker_last_try = 0;
+
+int thumb_worker_ok(void) { return g_worker != NULL; }
 
 static void thumb_worker_main(void *arg) {
     (void)arg;
@@ -372,11 +374,21 @@ static void thumb_worker_main(void *arg) {
     }
 }
 
-static void thumb_worker_ensure(void) {
-    if (g_worker || g_worker_failed) return;
+// Returns 1 when the worker thread exists. Creation is retried
+// (throttled) instead of giving up forever. NOTE: 3DS thread
+// priorities run 0x00 (highest) to 0x3F (lowest) - v3.18 passed
+// 0x40, outside the valid range, so threadCreate always failed
+// and its silent synchronous fallback froze the UI exactly like
+// the old code. That fallback is gone in v3.19: no worker means
+// no fetch (placeholder art), never a blocked main thread.
+static int thumb_worker_ensure(void) {
+    if (g_worker) return 1;
+    u64 now = osGetTime();
+    if (now - g_worker_last_try < 500) return 0;
+    g_worker_last_try = now;
     g_worker = threadCreate(thumb_worker_main, NULL, 128 * 1024,
-                            0x40, -2, true);
-    if (!g_worker) g_worker_failed = 1;
+                            0x3F, 0, true);
+    return g_worker != NULL;
 }
 
 int thumb_job_start(int bank, int idx, const char *video_id) {
@@ -387,7 +399,7 @@ int thumb_job_start(int bank, int idx, const char *video_id) {
         strncmp(g_np_id, video_id, sizeof(g_np_id) - 1) == 0)
         return 1; // already showing this song's artwork
     if (g_job.state != 0) return -1; // busy
-    thumb_worker_ensure();
+    if (!thumb_worker_ensure()) return -2; // no worker (yet)
     g_job.bank = bank;
     g_job.idx = idx;
     strncpy(g_job.id, video_id, sizeof(g_job.id) - 1);
@@ -395,14 +407,6 @@ int thumb_job_start(int bank, int idx, const char *video_id) {
     g_job.rgb = NULL;
     g_job.w = g_job.h = 0;
     g_job.rc = -1;
-    if (!g_worker) {
-        // No thread available: do the work inline (old behaviour)
-        // so the caller still gets its thumbnail eventually.
-        g_job.rc = fetch_decode(bank, g_job.id, &g_job.rgb, &g_job.w,
-                                &g_job.h);
-        g_job.state = 3;
-        return 0;
-    }
     __sync_synchronize();
     g_job.state = 1;
     return 0;

@@ -205,8 +205,14 @@ static void draw_list_scene(void) {
         int have = 0;
         for (int i = 0; i < total; i++)
             if (thumb_get(g_tq_bank, i)) have++;
-        char pr[48];
-        snprintf(pr, sizeof(pr), "サムネイル取得中 %d/%d", have, total);
+        char pr[96];
+        if (thumb_worker_ok())
+            snprintf(pr, sizeof(pr), "サムネイル取得中 %d/%d", have,
+                     total);
+        else
+            snprintf(pr, sizeof(pr),
+                     "サムネイル取得中 %d/%d（スレッド未動作）", have,
+                     total);
         txt(12, 222, 0.42f, COL_FAINT, pr);
     }
 }

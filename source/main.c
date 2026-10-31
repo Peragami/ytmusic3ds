@@ -1,4 +1,13 @@
-// ytmusic3ds v3.18 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.19 - YouTube Music style client for (Old) 3DS.
+//
+// v3.19 changes over v3.18 (user report, 2026-10-31):
+//   - The v3.18 worker thread never actually started: it was
+//     created with priority 0x40, outside the valid 0x00-0x3F
+//     range, so threadCreate failed and the silent synchronous
+//     fallback froze the UI like the old code. Fixed to 0x3F
+//     (app core), creation is retried, the synchronous fallback
+//     is removed, and the fetch progress line now shows
+//     （スレッド未動作） if the worker is not running.
 //
 // v3.18 changes over v3.17 (user report, 2026-10-31):
 //   - Thumbnail downloads + JPEG decode now run on a worker
@@ -163,7 +172,7 @@
 #include "ui.h"
 #include "updater.h"
 
-#define APP_VER "3.18"
+#define APP_VER "3.19"
 
 // The resolve/playback paths run deep curl + mbedTLS call chains on
 // this thread; give the main stack real headroom (v3.1 crash fix).
@@ -399,9 +408,11 @@ static void thumb_queue_step(void) {
     while (g_tq_next < g_tq_total) {
         int idx = g_tq_next++;
         if (thumb_get(bank, idx)) continue;
-        thumb_job_start(bank, idx,
-                        bank == THUMB_BANK_FAVS ? g_favs[idx].id
-                                                : g_results[idx].id);
+        int rc = thumb_job_start(bank, idx,
+                                 bank == THUMB_BANK_FAVS
+                                     ? g_favs[idx].id
+                                     : g_results[idx].id);
+        if (rc == -2) g_tq_next--; // no worker yet: keep the item
         return;
     }
     g_tq_bank = -1;

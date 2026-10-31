@@ -20,7 +20,7 @@
 #include "thumb.h"  // THUMB_MAX_*
 
 // ---------- paths ----------
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.18"
+#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.19"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
