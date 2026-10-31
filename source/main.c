@@ -1,4 +1,8 @@
-// ytmusic3ds v3.30 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.31 - YouTube Music style client for (Old) 3DS.
+//
+// v3.31 changes over v3.30 (user request, 2026-10-31):
+//   - The player screen's jacket is a little bigger
+//     (208 -> 224 px); the lyrics badge moved beside it.
 //
 // v3.30 changes over v3.29 (user request, 2026-10-31):
 //   - The favourite bookmark shown at the right of a list

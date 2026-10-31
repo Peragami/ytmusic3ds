@@ -379,17 +379,20 @@ static void draw_top_player_scene(void) {
     // Big jacket artwork centred on the top screen. Until the HQ
     // image lands (fetched during the download), fall back to the
     // playing song's list thumbnail so the screen is never blank.
+    // v3.31 (user request): jacket a little bigger, 208 -> 224.
     if (!thumb_get(THUMB_BANK_NP, 0) && g_playing >= 0) {
         int bank = g_playing_tab == TAB_LIBRARY ? THUMB_BANK_FAVS
                                                 : THUMB_BANK_RESULTS;
-        draw_thumb(bank, g_playing, 96, 12, 208, 1);
+        draw_thumb(bank, g_playing, 88, 8, 224, 1);
     } else {
-        draw_thumb(THUMB_BANK_NP, 0, 96, 12, 208, 1);
+        draw_thumb(THUMB_BANK_NP, 0, 88, 8, 224, 1);
     }
     // v3.26 (user request): no "Y: 一覧に戻る" hint on the top
     // screen - the jacket view stays clean like the real app.
+    // The lyrics badge moved beside the jacket (v3.31): at 224
+    // the old spot under the jacket no longer exists.
     if (g_lyrics_state == 1)
-        txt(300, 226, 0.42f, COL_DIM, "歌詞あり");
+        txt(320, 12, 0.42f, COL_DIM, "歌詞あり");
 }
 
 static void draw_bottom_player(void) {
