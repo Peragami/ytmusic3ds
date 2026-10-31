@@ -1,4 +1,12 @@
-// ytmusic3ds v3.11 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.12 - YouTube Music style client for (Old) 3DS.
+//
+// v3.12 changes over v3.11 (2026-10-31):
+//   - The update manifest URL (the dist/version.json in the
+//     user's GitHub repo, Peragami/ytmusic3ds) is baked in as
+//     the default, so Settings -> アップデート works out of the
+//     box. config.txt can still override it. This release is
+//     also the first one published to the repo, which makes a
+//     real v3.11 -> v3.12 over-the-air update test possible.
 //
 // v3.11 changes over v3.10 (user request, 2026-10-31):
 //   - Self-update: Settings gains an アップデート row. The app
@@ -77,7 +85,7 @@
 //     (Home / Search / Library / Settings) at the bottom, tappable
 //     via the touch screen (L/R also switch tabs).
 //   - Library tab = favourites stored on the SD card
-//     (sdmc:/3ds/ytmusic3ds-v3.11/favorites.txt). X toggles a song
+//     (sdmc:/3ds/ytmusic3ds-v3.12/favorites.txt). X toggles a song
 //     as favourite; favourites can be played like search results.
 //   - Settings tab: sound quality (itag preference order in net.c)
 //     and thumbnail on/off, persisted to config.txt on the SD card.
@@ -104,7 +112,13 @@
 #include "lyrics.h"
 #include "updater.h"
 
-#define APP_VER "3.11"
+#define APP_VER "3.12"
+
+// v3.12: the update manifest URL is baked in (config.txt can
+// still override it). Distribution lives in the dist/ folder of
+// the user's GitHub repository.
+#define DEFAULT_UPDATE_URL \
+    "https://raw.githubusercontent.com/Peragami/ytmusic3ds/main/dist/version.json"
 #include "net.h"
 #include "player.h"
 #include "thumb.h"
@@ -159,14 +173,14 @@ static int g_tq_next = 0;
 static int g_tq_total = 0;
 static int g_tq_favs_dirty = 0; // favourites bank was invalidated
 
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.11"
+#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.12"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
 // v3.5 stored its data in its own version folder; import from
 // there when the v3.6 files do not exist yet.
-#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.10/favorites.txt"
-#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.10/config.txt"
+#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.11/favorites.txt"
+#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.11/config.txt"
 
 // ---------- favourites ----------
 static result_t g_favs[THUMB_MAX_FAVS];
@@ -266,6 +280,10 @@ static void config_save(void) {
 }
 
 static void config_load(void) {
+    // Default first; a config value (own or legacy) overrides it.
+    strncpy(g_update_url, DEFAULT_UPDATE_URL,
+            sizeof(g_update_url) - 1);
+    g_update_url[sizeof(g_update_url) - 1] = '\0';
     FILE *f = fopen(CFG_PATH, "r");
     if (!f) f = fopen(LEGACY_CFG_PATH, "r");
     if (!f) return;
@@ -441,7 +459,7 @@ static void draw_progress(float x, float y, float w, int pct) {
 
 static void draw_list_scene(void) {
     draw_logo(10, 8);
-    txt(356, 14, 0.45f, COL_FAINT, "v3.11");
+    txt(356, 14, 0.45f, COL_FAINT, "v3.12");
     // Chips row: context chip + count chip + quality chip.
     char chip[112];
     if (list_tab() == TAB_LIBRARY)
@@ -560,7 +578,7 @@ static void draw_settings_scene(void) {
     y += 46;
     txt(14, y, 0.48f, COL_DIM, "十字キー上下: 項目   左右/A: 変更");
     y += 22;
-    txt(14, y, 0.48f, COL_FAINT, "ytmusic3ds v3.11 / Old 3DS");
+    txt(14, y, 0.48f, COL_FAINT, "ytmusic3ds v3.12 / Old 3DS");
 }
 
 // ---------- v3.6 player screen ----------
@@ -1545,7 +1563,7 @@ static int do_update_flow(void) {
     char self[340], tmp[360];
     snprintf(self, sizeof(self), "%s",
              g_self_path[0] ? g_self_path
-                            : APP_DIR "/ytmusic3ds-v3.11.3dsx");
+                            : APP_DIR "/ytmusic3ds-v3.12.3dsx");
     snprintf(tmp, sizeof(tmp), "%s/update.tmp", APP_DIR);
     if (updater_apply(&info, self, tmp, upd_cb, err,
                       sizeof(err)) != 0) {

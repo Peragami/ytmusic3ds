@@ -1,8 +1,17 @@
-# ytmusic3ds v3.11
+# ytmusic3ds v3.12
 
 YouTube Music-style audio client prototype for the (Old) Nintendo 3DS.
 Search YouTube Music from the software keyboard, resolve an Opus/WebM
 audio stream, download it, and play it through libopus + ndsp.
+
+## What changed in v3.12
+
+- **Update URL baked in**: the manifest URL
+  (`https://raw.githubusercontent.com/Peragami/ytmusic3ds/main/dist/version.json`)
+  is now the built-in default, so Settings -> アップデート works
+  without editing config.txt (a config value still overrides it).
+- This is the first release published to the GitHub repo's
+  `dist/`, enabling a real v3.11 -> v3.12 over-the-air update.
 
 ## What changed in v3.11
 
@@ -192,8 +201,8 @@ Everything else is as in v2: swkbd search (up to 20 results), the
 hand-written WebM/EBML demuxer, libopus decode, ndsp output, B stops,
 32 MB download cap, no New-3DS-only features.
 
-Build: `source ../env.sh && make` -> `ytmusic3ds-v3.11.3dsx`.
-Install/test steps: see the v3.11 section of `../report.md`.
+Build: `source ../env.sh && make` -> `ytmusic3ds-v3.12.3dsx`.
+Install/test steps: see the v3.12 section of `../report.md`.
 First run on hardware requires a one-time DSP firmware dump (DSP1).
 
 ## Credits / license note
