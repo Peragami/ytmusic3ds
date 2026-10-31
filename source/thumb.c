@@ -54,6 +54,30 @@ static size_t mem_write(void *ptr, size_t size, size_t nmemb, void *ud) {
     return total;
 }
 
+// v3.16: abort the transfer the moment the user touches
+// anything, so a slow thumbnail can never lock the UI out (the
+// old fixed 15s timeout could freeze input for that long).
+static int thumb_xfer(void *ud, curl_off_t dt, curl_off_t dn,
+                      curl_off_t ut, curl_off_t un) {
+    (void)ud;
+    (void)dt;
+    (void)dn;
+    (void)ut;
+    (void)un;
+    hidScanInput();
+    u32 h = hidKeysHeld();
+    if (h & (KEY_TOUCH | KEY_A | KEY_B | KEY_X | KEY_Y | KEY_L |
+             KEY_R | KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT |
+             KEY_START | KEY_SELECT))
+        return 1;
+    circlePosition cp;
+    hidCircleRead(&cp);
+    if (cp.dx > 40 || cp.dx < -40 || cp.dy > 40 || cp.dy < -40)
+        return 1;
+    return 0;
+}
+
+// Returns 0 on success, -1 on failure, 2 when aborted by input.
 static int download_jpeg(const char *video_id, int hq, membuf_t *out) {
     char url[96];
     snprintf(url, sizeof(url), "https://i.ytimg.com/vi/%s/%s.jpg",
@@ -65,10 +89,17 @@ static int download_jpeg(const char *video_id, int hq, membuf_t *out) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, thumb_xfer);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     CURLcode res = curl_easy_perform(curl);
+    if (res == CURLE_ABORTED_BY_CALLBACK) {
+        curl_easy_cleanup(curl);
+        return 2;
+    }
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
     curl_easy_cleanup(curl);
@@ -325,6 +356,10 @@ int thumb_fetch(int bank, int idx, const char *video_id) {
     // The now-playing bank wants the larger hqdefault image; fall
     // back to mqdefault when a video has no usable hq image.
     int dl = download_jpeg(video_id, bank == THUMB_BANK_NP, &mb);
+    if (dl == 2) { // interrupted by input: caller may retry later
+        free(mb.data);
+        return 2;
+    }
     if (dl != 0 && bank == THUMB_BANK_NP) {
         free(mb.data);
         memset(&mb, 0, sizeof(mb));

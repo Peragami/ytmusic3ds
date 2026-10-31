@@ -29,4 +29,10 @@ const char *lyrics_line(int i);
 // (server busy / not registered / network error), for the UI.
 const char *lyrics_debug(void);
 
+// Like count for the player screen (v3.16), from the Return
+// YouTube Dislike API's public votes endpoint (an estimate:
+// YouTube no longer publishes like counts, this service
+// reconstructs them). Returns 0 and sets *likes_out on success.
+int likes_fetch(const char *video_id, long *likes_out);
+
 #endif // LYRICS_H

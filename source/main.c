@@ -1,4 +1,16 @@
-// ytmusic3ds v3.15 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.16 - YouTube Music style client for (Old) 3DS.
+//
+// v3.16 changes over v3.15 (user feedback, 2026-10-31):
+//   - Thumbnail fetches abort the moment the user touches
+//     anything (plus 3s connect / 8s total timeouts) and the
+//     queue retries interrupted items, so fetches can no
+//     longer lock the UI out.
+//   - Player screen: all button text captions removed. The
+//     like pill shows the song's like count (Return YouTube
+//     Dislike API estimate, fetched with the deferred assets),
+//     bad and lyrics pills are icon-only, the routine "Playing"
+//     status line is hidden, and the lyrics icon is the
+//     text-lines "subject" glyph instead of the mic.
 //
 // v3.15 changes over v3.14 (user request, 2026-10-31):
 //   - Keyboard rebuilt to the layout in the user's smartphone
@@ -106,7 +118,7 @@
 //     (Home / Search / Library / Settings) at the bottom, tappable
 //     via the touch screen (L/R also switch tabs).
 //   - Library tab = favourites stored on the SD card
-//     (sdmc:/3ds/ytmusic3ds-v3.15/favorites.txt). X toggles a song
+//     (sdmc:/3ds/ytmusic3ds-v3.16/favorites.txt). X toggles a song
 //     as favourite; favourites can be played like search results.
 //   - Settings tab: sound quality (itag preference order in net.c)
 //     and thumbnail on/off, persisted to config.txt on the SD card.
@@ -134,7 +146,7 @@
 #include "lyrics.h"
 #include "updater.h"
 
-#define APP_VER "3.15"
+#define APP_VER "3.16"
 
 // v3.12: the update manifest URL is baked in (config.txt can
 // still override it). Distribution lives in the dist/ folder of
@@ -169,6 +181,7 @@ static int g_playing = -1; // index into the playing list
 static int g_playing_tab = TAB_HOME;
 static int g_switch_target = -1;
 static result_t g_np_song; // now-playing (or last played) song
+static long g_np_likes = -1; // like count, -1 = unknown (v3.16)
 static int g_has_np = 0;
 
 // ---------- v3.6 player screen ----------
@@ -196,14 +209,14 @@ static int g_tq_next = 0;
 static int g_tq_total = 0;
 static int g_tq_favs_dirty = 0; // favourites bank was invalidated
 
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.15"
+#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.16"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
 // v3.5 stored its data in its own version folder; import from
 // there when the v3.6 files do not exist yet.
-#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.14/favorites.txt"
-#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.14/config.txt"
+#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.15/favorites.txt"
+#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.15/config.txt"
 
 // ---------- favourites ----------
 static result_t g_favs[THUMB_MAX_FAVS];
@@ -485,7 +498,7 @@ static void draw_progress(float x, float y, float w, int pct) {
 
 static void draw_list_scene(void) {
     draw_logo(10, 8);
-    txt(356, 14, 0.45f, COL_FAINT, "v3.15");
+    txt(356, 14, 0.45f, COL_FAINT, "v3.16");
     // Chips row: context chip + count chip + quality chip.
     char chip[112];
     if (list_tab() == TAB_LIBRARY)
@@ -620,15 +633,30 @@ static void fmt_time(char *out, size_t cap, unsigned sec) {
     snprintf(out, cap, "%u:%02u", sec / 60, sec % 60);
 }
 
+// Japanese-style compact count for the like pill: 9999 以下は
+// そのまま、以上は 万 / 億 with one decimal when it helps.
+static void fmt_count(char *out, size_t cap, long n) {
+    if (n < 10000) {
+        snprintf(out, cap, "%ld", n);
+        return;
+    }
+    double v = n >= 100000000L ? n / 1e8 : n / 1e4;
+    const char *unit = n >= 100000000L ? "億" : "万";
+    if (v >= 100 || v == (double)(long)v)
+        snprintf(out, cap, "%ld%s", (long)v, unit);
+    else
+        snprintf(out, cap, "%.1f%s", v, unit);
+}
+
 // Touch zones on the player screen's bottom half. Layout constants
 // are shared by the drawing code and the hit tests:
-//   pills row y 54..90:  like x<104, bad x<196, lyrics else
+//   pills row y 54..90:  like x<116, bad x<172, lyrics x<232
 //   controls y 138..202: five 64px zones (shuffle/prev/play/next/repeat)
 static int player_zone(int px, int py) {
     if (py >= 54 && py < 90) {
-        if (px < 104) return 1; // like
-        if (px < 196) return 2; // bad
-        if (px < 288) return 3; // lyrics
+        if (px < 116) return 1; // like
+        if (px < 172) return 2; // bad
+        if (px < 232) return 3; // lyrics
         return 0;
     }
     if (py >= 138 && py < 202) return 4 + (px / 64); // 4..8
@@ -702,22 +730,27 @@ static void draw_bottom_player(void) {
         utf8_truncate(g_np_song.sub, s, sizeof(s), 62);
         txt(8, 32, 0.46f, COL_DIM, s);
     }
-    // Pills: like / bad / lyrics (Material icons + labels; the
-    // active state is shown by the accent-tinted icon).
+    // Pills: like (icon + count) / bad (icon only) / lyrics
+    // (icon only; v3.16 user request - no text labels, and the
+    // lyrics glyph is a text-lines icon, not the old mic).
     int liked = fav_find(g_np_song.id) >= 0;
-    draw_pill(8, 56, 92, 26, COL_CHIP);
+    draw_pill(8, 56, 104, 26, COL_CHIP);
     draw_icon(ICON_THUMB_UP, 18, 60, 18,
               liked ? COL_ACCENT : COL_WHITE);
-    txt(42, 61, 0.5f, COL_WHITE, "いいね");
-    draw_pill(108, 56, 84, 26, COL_CHIP);
-    draw_icon(ICON_THUMB_DOWN, 118, 60, 18, COL_WHITE);
-    txt(142, 61, 0.5f, COL_WHITE, "バッド");
-    draw_pill(200, 56, 84, 26, COL_CHIP);
-    draw_icon(ICON_MIC, 210, 60, 18,
+    if (g_np_likes >= 0) {
+        char lc[24];
+        fmt_count(lc, sizeof(lc), g_np_likes);
+        txt(42, 61, 0.5f, COL_WHITE, lc);
+    }
+    draw_pill(120, 56, 48, 26, COL_CHIP);
+    draw_icon(ICON_THUMB_DOWN, 135, 60, 18, COL_WHITE);
+    draw_pill(176, 56, 48, 26, COL_CHIP);
+    draw_icon(ICON_SUBJECT, 191, 60, 18,
               g_lyrics_view ? COL_ACCENT : COL_WHITE);
-    txt(234, 61, 0.5f, COL_WHITE, "歌詞");
-    // Message line.
+    // Message line. The routine "Playing" status is not shown
+    // (v3.16 user request); real messages still are.
     const char *msg = g_playback_view ? ctl->message : g_status;
+    if (strcmp(msg, "Playing") == 0) msg = "";
     char m[128];
     utf8_truncate(msg, m, sizeof(m), 72);
     txt(8, 90, 0.42f, COL_DIM, m);
@@ -741,13 +774,12 @@ static void draw_bottom_player(void) {
         txt(282, 128, 0.44f, COL_DIM, tt);
     }
     draw_progress(8, 112, 304, pct);
-    // Controls row (Material icons).
+    // Controls row (Material icons only - no text captions,
+    // v3.16 user request; state reads from icon colour/glyph).
     float cy = 168;
     u32 c_shuffle = g_shuffle ? COL_ACCENT : COL_DIM;
     draw_icon(ICON_SHUFFLE, 18, cy - 13, 26, c_shuffle);
-    txt(12, 188, 0.36f, c_shuffle, "シャッフル");
     draw_icon(ICON_SKIP_PREVIOUS, 81, cy - 15, 30, COL_WHITE);
-    txt(88, 188, 0.36f, COL_DIM, "前へ");
     // play / pause: big white circle with a dark glyph
     int show_pause = g_playback_view && ctl->phase == PHASE_PLAY &&
                      !ctl->paused;
@@ -755,14 +787,9 @@ static void draw_bottom_player(void) {
     draw_icon(show_pause ? ICON_PAUSE : ICON_PLAY_ARROW, 143, cy - 17,
               34, COL_BG);
     draw_icon(ICON_SKIP_NEXT, 209, cy - 15, 30, COL_WHITE);
-    txt(212, 188, 0.36f, COL_DIM, "次へ");
     u32 c_repeat = g_repeat ? COL_ACCENT : COL_DIM;
     draw_icon(g_repeat == 2 ? ICON_REPEAT_ONE : ICON_REPEAT, 275,
               cy - 13, 26, c_repeat);
-    txt(262, 188, 0.36f, c_repeat,
-        g_repeat == 2 ? "リピート:1曲"
-                      : g_repeat == 1 ? "リピート:全部"
-                                      : "リピート");
     txt(8, 222, 0.42f, COL_FAINT, "Y: 一覧に戻る");
     char rl[96];
     snprintf(rl, sizeof(rl), "Route: %s", g_route_label);
@@ -1102,6 +1129,8 @@ static void ui_hook(void *user) {
             lyrics_fetch(g_np_song.id, g_np_song.title, artist) == 0
                 ? 1
                 : 2;
+        long lk = -1;
+        if (likes_fetch(g_np_song.id, &lk) == 0) g_np_likes = lk;
         g_last_draw_ms = 0;
     }
     u64 now = osGetTime();
@@ -1130,9 +1159,10 @@ static void thumb_queue_step(void) {
     while (g_tq_next < g_tq_total) {
         int idx = g_tq_next++;
         if (thumb_get(bank, idx)) continue;
-        thumb_fetch(bank, idx,
-                    bank == THUMB_BANK_FAVS ? g_favs[idx].id
-                                            : g_results[idx].id);
+        int rc = thumb_fetch(bank, idx,
+                             bank == THUMB_BANK_FAVS ? g_favs[idx].id
+                                                     : g_results[idx].id);
+        if (rc == 2) g_tq_next--; // interrupted by input: retry
         return;
     }
     g_tq_bank = -1;
@@ -1804,6 +1834,7 @@ static int do_play_once(void) {
     // fetched by the playback hook while the file downloads (see
     // g_deferred_pending), so they never delay the music.
     g_lyrics_state = 0;
+    g_np_likes = -1;
     g_deferred_pending = 1;
 
     int rc = -1;
@@ -2107,7 +2138,7 @@ static int do_update_flow(void) {
     char self[340], tmp[360];
     snprintf(self, sizeof(self), "%s",
              g_self_path[0] ? g_self_path
-                            : APP_DIR "/ytmusic3ds-v3.15.3dsx");
+                            : APP_DIR "/ytmusic3ds-v3.16.3dsx");
     snprintf(tmp, sizeof(tmp), "%s/update.tmp", APP_DIR);
     if (updater_apply(&info, self, tmp, upd_cb, err,
                       sizeof(err)) != 0) {

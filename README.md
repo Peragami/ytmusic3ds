@@ -1,8 +1,21 @@
-# ytmusic3ds v3.15
+# ytmusic3ds v3.16
 
 YouTube Music-style audio client prototype for the (Old) Nintendo 3DS.
 Search YouTube Music from the software keyboard, resolve an Opus/WebM
 audio stream, download it, and play it through libopus + ndsp.
+
+## What changed in v3.16
+
+- **Thumbnails no longer block input**: a fetch aborts as
+  soon as any key/touch/circle-pad input arrives (timeouts
+  also tightened to 3s connect / 8s total), and the queue
+  retries interrupted items on later passes.
+- **Player screen decluttered**: button captions removed;
+  the like pill shows the like count (an estimate from the
+  Return YouTube Dislike API, fetched with the other
+  deferred assets), bad/lyrics are icon-only, the "Playing"
+  status text is hidden, and the lyrics icon is now the
+  text-lines glyph instead of a microphone.
 
 ## What changed in v3.15
 
@@ -230,8 +243,8 @@ Everything else is as in v2: swkbd search (up to 20 results), the
 hand-written WebM/EBML demuxer, libopus decode, ndsp output, B stops,
 32 MB download cap, no New-3DS-only features.
 
-Build: `source ../env.sh && make` -> `ytmusic3ds-v3.15.3dsx`.
-Install/test steps: see the v3.15 section of `../report.md`.
+Build: `source ../env.sh && make` -> `ytmusic3ds-v3.16.3dsx`.
+Install/test steps: see the v3.16 section of `../report.md`.
 First run on hardware requires a one-time DSP firmware dump (DSP1).
 
 ## Credits / license note

@@ -308,3 +308,31 @@ int lyrics_fetch(const char *video_id, const char *title,
                  "歌詞データベースに登録がありません");
     return -1;
 }
+
+// ---------- like count (v3.16) ----------
+// YouTube no longer publishes like counts; the Return YouTube
+// Dislike project's public API reconstructs an estimate from
+// archived data and its own users' votes. One small JSON GET.
+int likes_fetch(const char *video_id, long *likes_out) {
+    if (!video_id || !video_id[0]) return -1;
+    char url[160];
+    snprintf(url, sizeof(url),
+             "https://returnyoutubedislikeapi.com/votes?videoId=%s",
+             video_id);
+    buf_t b;
+    memset(&b, 0, sizeof(b));
+    int rc = http_get(url, &b);
+    if (rc != 0 || !b.data) {
+        free(b.data);
+        return -1;
+    }
+    json_error_t je;
+    json_t *root = json_loads(b.data, 0, &je);
+    free(b.data);
+    if (!root) return -1;
+    json_t *jl = json_object_get(root, "likes");
+    int ok = json_is_integer(jl);
+    if (ok) *likes_out = (long)json_integer_value(jl);
+    json_decref(root);
+    return ok ? 0 : -1;
+}
