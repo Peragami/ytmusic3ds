@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "sha256.h"
 
@@ -77,7 +78,7 @@ int updater_fetch_manifest(const char *manifest_url, upd_info_t *info,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, buf_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &b);
     curl_easy_setopt(curl, CURLOPT_USERAGENT,
-                     "ytmusic3ds/3.13 (Old 3DS homebrew client)");
+                     "ytmusic3ds/3.14 (Old 3DS homebrew client)");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
@@ -163,9 +164,22 @@ int updater_apply(const upd_info_t *info, const char *self_path,
                   const char *tmp_path, upd_progress_fn cb, char *err,
                   size_t errcap) {
     if (cb) cb(-1, "ダウンロード中...");
+    // Make sure the folder exists (v3.14: belt and braces next
+    // to the startup mkdir in main).
+    {
+        char dir[560];
+        strncpy(dir, tmp_path, sizeof(dir) - 1);
+        dir[sizeof(dir) - 1] = '\0';
+        char *slash = strrchr(dir, '/');
+        if (slash) {
+            *slash = '\0';
+            mkdir(dir, 0777);
+        }
+    }
     FILE *f = fopen(tmp_path, "wb");
     if (!f) {
-        snprintf(err, errcap, "一時ファイルを作成できません");
+        snprintf(err, errcap, "一時ファイルを作成できません (%s)",
+                 tmp_path);
         return -1;
     }
     dl_t d;
@@ -183,7 +197,7 @@ int updater_apply(const upd_info_t *info, const char *self_path,
     curl_easy_setopt(curl, CURLOPT_URL, info->url);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, f);
     curl_easy_setopt(curl, CURLOPT_USERAGENT,
-                     "ytmusic3ds/3.13 (Old 3DS homebrew client)");
+                     "ytmusic3ds/3.14 (Old 3DS homebrew client)");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);

@@ -1,4 +1,10 @@
-// ytmusic3ds v3.13 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.14 - YouTube Music style client for (Old) 3DS.
+//
+// v3.14 changes over v3.13 (bug report, 2026-10-31):
+//   - The self-update failed with "cannot create temp file":
+//     the app never created its own APP_DIR folder and relied on
+//     the install zip. Startup now mkdirs it, the updater mkdirs
+//     before writing its temp file, and the error names the path.
 //
 // v3.13 changes over v3.12 (user request, 2026-10-31):
 //   - Smartphone-style search input: a flick/toggle kana
@@ -92,7 +98,7 @@
 //     (Home / Search / Library / Settings) at the bottom, tappable
 //     via the touch screen (L/R also switch tabs).
 //   - Library tab = favourites stored on the SD card
-//     (sdmc:/3ds/ytmusic3ds-v3.13/favorites.txt). X toggles a song
+//     (sdmc:/3ds/ytmusic3ds-v3.14/favorites.txt). X toggles a song
 //     as favourite; favourites can be played like search results.
 //   - Settings tab: sound quality (itag preference order in net.c)
 //     and thumbnail on/off, persisted to config.txt on the SD card.
@@ -112,6 +118,7 @@
 
 #include <malloc.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -119,7 +126,7 @@
 #include "lyrics.h"
 #include "updater.h"
 
-#define APP_VER "3.13"
+#define APP_VER "3.14"
 
 // v3.12: the update manifest URL is baked in (config.txt can
 // still override it). Distribution lives in the dist/ folder of
@@ -181,14 +188,14 @@ static int g_tq_next = 0;
 static int g_tq_total = 0;
 static int g_tq_favs_dirty = 0; // favourites bank was invalidated
 
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.13"
+#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.14"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
 // v3.5 stored its data in its own version folder; import from
 // there when the v3.6 files do not exist yet.
-#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.12/favorites.txt"
-#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.12/config.txt"
+#define LEGACY_FAV_PATH "sdmc:/3ds/ytmusic3ds-v3.13/favorites.txt"
+#define LEGACY_CFG_PATH "sdmc:/3ds/ytmusic3ds-v3.13/config.txt"
 
 // ---------- favourites ----------
 static result_t g_favs[THUMB_MAX_FAVS];
@@ -470,7 +477,7 @@ static void draw_progress(float x, float y, float w, int pct) {
 
 static void draw_list_scene(void) {
     draw_logo(10, 8);
-    txt(356, 14, 0.45f, COL_FAINT, "v3.13");
+    txt(356, 14, 0.45f, COL_FAINT, "v3.14");
     // Chips row: context chip + count chip + quality chip.
     char chip[112];
     if (list_tab() == TAB_LIBRARY)
@@ -1927,7 +1934,7 @@ static int do_update_flow(void) {
     char self[340], tmp[360];
     snprintf(self, sizeof(self), "%s",
              g_self_path[0] ? g_self_path
-                            : APP_DIR "/ytmusic3ds-v3.13.3dsx");
+                            : APP_DIR "/ytmusic3ds-v3.14.3dsx");
     snprintf(tmp, sizeof(tmp), "%s/update.tmp", APP_DIR);
     if (updater_apply(&info, self, tmp, upd_cb, err,
                       sizeof(err)) != 0) {
@@ -1966,6 +1973,13 @@ int main(int argc, char **argv) {
     }
     curl_global_init(CURL_GLOBAL_DEFAULT);
     srand((unsigned)osGetTime());
+    // v3.14: the app never created its own folder and silently
+    // relied on the install zip to make it. Loaded any other way
+    // (e.g. straight from an emulator), every write into APP_DIR
+    // failed - the updater was the first feature to surface it
+    // ("cannot create temp file"). Create it up front.
+    mkdir("sdmc:/3ds", 0777);
+    mkdir(APP_DIR, 0777);
     config_load();
     favs_load();
 
