@@ -450,6 +450,15 @@ static void draw_bottom_player(void) {
 static const int tab_icons[4] = {ICON_HOME, ICON_SEARCH,
                                  ICON_BOOKMARK_BORDER, ICON_SETTINGS};
 
+// Rendered width of a string at a scale (v3.21: for centring).
+static float text_width(const char *str, float scale) {
+    C2D_Text t;
+    C2D_TextFontParse(&t, g_font, g_textbuf, str);
+    float w = 0;
+    C2D_TextGetDimensions(&t, scale, scale, &w, NULL);
+    return w;
+}
+
 static void draw_nav(void) {
     C2D_DrawRectSolid(0, NAV_TOP, 0.3f, 320, 240 - NAV_TOP, COL_NAV);
     static const char *labels[4] = {"ホーム", "検索", "ライブラリ", "設定"};
@@ -463,7 +472,9 @@ static void draw_nav(void) {
         int icon = tab_icons[t];
         if (is_active && t == TAB_LIBRARY) icon = ICON_BOOKMARK;
         draw_icon(icon, x + 28, NAV_TOP + 5, 24, col);
-        float lx = x + (t == TAB_LIBRARY ? 14 : 22);
+        // Centre the label on the tab (v3.21: the old hand-set
+        // offsets left the 2-char labels visibly off-centre).
+        float lx = x + 40 - text_width(labels[t], 0.42f) / 2;
         txt(lx, NAV_TOP + 33, 0.42f, col, labels[t]);
     }
 }

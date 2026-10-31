@@ -1,4 +1,9 @@
-// ytmusic3ds v3.20 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.21 - YouTube Music style client for (Old) 3DS.
+//
+// v3.21 changes over v3.20 (user report, 2026-10-31):
+//   - Tab bar labels are now centred on their tabs by measured
+//     text width; the old fixed offsets left the 2-character
+//     labels （検索/設定） sitting left of their icons.
 //
 // v3.20 changes over v3.19 (user request, 2026-10-31): UI pass
 //   toward the real YouTube Music app, compared against the
