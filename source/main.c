@@ -1,4 +1,13 @@
-// ytmusic3ds v3.28 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.29 - YouTube Music style client for (Old) 3DS.
+//
+// v3.29 changes over v3.28 (user report, 2026-10-31):
+//   - Selecting a song no longer freezes the app for ~1 s:
+//     the resolve took two blocking round trips (visitorData
+//     GET + /player POST) with no input or redraw. net.c
+//     requests now run on a curl multi handle with a UI pump
+//     (input + redraw keep running, B cancels), and the
+//     visitorData token is cached for 30 minutes so later
+//     resolves need only the /player POST.
 //
 // v3.28 changes over v3.27 (user request, 2026-10-31):
 //   - The player view's background is tinted with the
@@ -521,12 +530,31 @@ static int prompt_query(void) {
     return g_kana_on ? kana_prompt() : prompt_query_swkbd();
 }
 
+// v3.29: net.c calls this while a request is in flight, so
+// the screen keeps redrawing and B cancels the wait instead
+// of the app looking frozen (the user reported ~1 s of dead
+// input at song select, where resolve made two round trips).
+static int g_net_cancelled = 0;
+static int net_pump(void) {
+    hidScanInput();
+    if (hidKeysDown() & KEY_B) g_net_cancelled = 1;
+    draw_all();
+    return g_net_cancelled;
+}
+
 static void do_search_flow(void) {
     if (prompt_query() != 0) return;
     snprintf(g_status, sizeof(g_status), "Searching...");
     draw_all();
     thumbs_clear_bank(THUMB_BANK_RESULTS);
-    if (yt_search(g_query) == 0) {
+    g_net_cancelled = 0;
+    int search_rc = yt_search(g_query);
+    if (g_net_cancelled) {
+        snprintf(g_status, sizeof(g_status), "キャンセルしました");
+        draw_all();
+        return;
+    }
+    if (search_rc == 0) {
         g_tab = TAB_HOME;
         g_selected = 0;
         snprintf(g_status, sizeof(g_status), "%d results. A: play.",
@@ -641,7 +669,13 @@ static int do_play_once(void) {
     int itag = 0;
     long length_sec = 0;
     log_reset();
+    g_net_cancelled = 0;
     if (resolve_stream(r->id, url, sizeof(url), &itag, &length_sec) != 0) {
+        if (g_net_cancelled) {
+            snprintf(g_status, sizeof(g_status), "キャンセルしました");
+            draw_all();
+            return 1;
+        }
         snprintf(g_status, sizeof(g_status),
                  "Could not resolve a stream (network/YouTube busy?).");
         draw_all();
@@ -978,6 +1012,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     curl_global_init(CURL_GLOBAL_DEFAULT);
+    net_set_pump(net_pump); // v3.29: keep the UI alive in requests
     srand((unsigned)osGetTime());
     // v3.14: the app never created its own folder and silently
     // relied on the install zip to make it. Loaded any other way

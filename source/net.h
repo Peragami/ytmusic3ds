@@ -22,6 +22,11 @@ extern int g_result_count;
 // Fills g_results/g_result_count. Returns 0 on success, -1 on failure
 // (human-readable reason is printed to the currently selected console).
 int yt_search(const char *query);
+// UI pump hook (v3.29): while any net.c request is in flight
+// this is called repeatedly; it should keep input and drawing
+// alive and return 1 to abort the request. Registered by
+// main.c; NULL (the default) keeps the old blocking behaviour.
+void net_set_pump(int (*fn)(void));
 
 // Resolve a playable audio stream URL for video_id.
 //

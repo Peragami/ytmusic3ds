@@ -2,6 +2,7 @@
 
 #include "net.h"
 
+#include <3ds.h> // osGetTime (visitor cache, v3.29)
 #include <curl/curl.h>
 #include <jansson.h>
 
@@ -72,6 +73,15 @@ static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
 
 // Perform an HTTP(S) request; body != NULL -> POST with that body.
 // On success (any HTTP code) returns 0 and sets *http_out; response in buf.
+// UI pump hook (v3.29, user report): a plain curl_easy_perform
+// froze the whole app for each request's round trip - about a
+// second at song select, where resolve needs two of them.
+// Requests now run on a multi handle and the pump (registered
+// from main.c) keeps input + redraw alive while waiting; it
+// can also abort the request (B button = cancel).
+static int (*g_pump)(void) = NULL;
+void net_set_pump(int (*fn)(void)) { g_pump = fn; }
+
 static int http_request(const char *url, const char *body, buf_t *buf,
                         long *http_out) {
     buf->data = NULL;
@@ -94,12 +104,38 @@ static int http_request(const char *url, const char *body, buf_t *buf,
     // Prototype shortcut: no CA bundle configured on device yet.
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    CURLcode res = curl_easy_perform(curl);
+    CURLcode res = CURLE_FAILED_INIT;
     long code = 0;
-    if (res == CURLE_OK) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    int aborted = 0;
+    CURLM *mh = curl_multi_init();
+    if (mh && curl_multi_add_handle(mh, curl) == CURLM_OK) {
+        int running = 1;
+        while (running) {
+            curl_multi_perform(mh, &running);
+            if (g_pump && g_pump()) {
+                aborted = 1;
+                break;
+            }
+            if (running) curl_multi_wait(mh, NULL, 0, 30, NULL);
+        }
+        if (!aborted) {
+            int nmsg = 0;
+            CURLMsg *msg = curl_multi_info_read(mh, &nmsg);
+            if (msg) res = msg->data.result;
+            if (res == CURLE_OK)
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+        }
+        curl_multi_remove_handle(mh, curl);
+        curl_multi_cleanup(mh);
+    }
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     if (http_out) *http_out = code;
+    if (aborted) {
+        free(buf->data);
+        buf->data = NULL;
+        return -1;
+    }
     if (res != CURLE_OK) {
         printf("request failed: %s\n", curl_easy_strerror(res));
         free(buf->data);
@@ -275,6 +311,30 @@ int yt_search(const char *query) {
 // Re-implemented here from that understanding; see
 // ../fourthtube-analysis/ANALYSIS.md for the full writeup.
 
+static int fetch_visitor_data(char *out, size_t out_cap);
+
+// v3.29: visitorData is reused across resolves for 30
+// minutes - fetching it fresh on every song select cost a
+// whole extra round trip, a big part of the ~1 s stall the
+// user reported. resolve_stream_direct drops the cache when
+// a context shape fails, so the next shape starts fresh.
+static char g_visitor_cache[1024];
+static u64 g_visitor_at = 0;
+
+static void visitor_data_cached(char *out, size_t cap) {
+    u64 now = osGetTime();
+    if (!g_visitor_cache[0] ||
+        now - g_visitor_at > 1800ULL * 1000ULL) {
+        g_visitor_cache[0] = '\0';
+        if (fetch_visitor_data(g_visitor_cache,
+                               sizeof(g_visitor_cache)) == 0)
+            g_visitor_at = now;
+    }
+    snprintf(out, cap, "%s", g_visitor_cache);
+}
+
+static void visitor_cache_drop(void) { g_visitor_cache[0] = '\0'; }
+
 // Fetch a fresh visitorData token (FourthTube: GET youtube.com/sw.js_data,
 // value at JSON path [0][2][0][0][13] after the )]}' prefix).
 // Returns 0 on success.
@@ -337,7 +397,7 @@ static int resolve_stream_direct_ctx(const char *video_id, int ctx,
     char *esc_vd = scratch + 1024;      // 2048 bytes
     char *body = scratch + 1024 + 2048; // 3072 bytes
     visitor[0] = '\0';
-    fetch_visitor_data(visitor, 1024); // optional but helps
+    visitor_data_cached(visitor, 1024); // optional but helps
     json_escape(visitor, esc_vd, 2048);
 
     char url[256];
@@ -445,6 +505,7 @@ int resolve_stream_direct(const char *video_id, char *url_out,
         return 0;
     }
     printf("direct VISIONOS resolve failed, trying recipe context\n");
+    visitor_cache_drop(); // fresh token for the other shape
     if (resolve_stream_direct_ctx(video_id, 2, url_out, url_cap,
                                   itag_out, length_sec_out) == 0) {
         g_direct_ctx = 2; // recipe ANDROID+iPhone
