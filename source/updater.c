@@ -78,7 +78,7 @@ int updater_fetch_manifest(const char *manifest_url, upd_info_t *info,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, buf_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &b);
     curl_easy_setopt(curl, CURLOPT_USERAGENT,
-                     "ytmusic3ds/3.16 (Old 3DS homebrew client)");
+                     "ytmusic3ds/3.17 (Old 3DS homebrew client)");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
@@ -197,7 +197,7 @@ int updater_apply(const upd_info_t *info, const char *self_path,
     curl_easy_setopt(curl, CURLOPT_URL, info->url);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, f);
     curl_easy_setopt(curl, CURLOPT_USERAGENT,
-                     "ytmusic3ds/3.16 (Old 3DS homebrew client)");
+                     "ytmusic3ds/3.17 (Old 3DS homebrew client)");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
