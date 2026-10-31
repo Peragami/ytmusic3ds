@@ -266,7 +266,11 @@ static int upload_texture(int bank, int idx, const uint8_t *rgb, int w,
     u32 *px = (u32 *)tex->data;
     int side, x0, y0;
     art_crop(rgb, w, h, &x0, &y0, &side);
-    float rr = dim * 0.12f;
+    // v3.26 (user report): the jacket's corners were too
+    // round at 12% - the real app barely rounds them. The
+    // now-playing bank uses 5%; list thumbnails keep 12%
+    // (at 28px on screen that is only a few pixels anyway).
+    float rr = dim * (bank == THUMB_BANK_NP ? 0.05f : 0.12f);
     float half = dim * 0.5f;
     for (int y = 0; y < dim; y++) {
         int sy = y0 + (y * side) / dim;

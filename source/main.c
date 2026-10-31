@@ -1,4 +1,13 @@
-// ytmusic3ds v3.25 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.26 - YouTube Music style client for (Old) 3DS.
+//
+// v3.26 changes over v3.25 (user requests, 2026-10-31):
+//   - Removed the "Y: 一覧に戻る" hint from the top (jacket)
+//     screen of the player view; the bottom screen keeps its
+//     footer hints.
+//   - Jacket corner rounding reduced toward the real app:
+//     the now-playing texture mask is 5% of the side (was
+//     12%) and the jacket placeholder matches. List
+//     thumbnails are unchanged.
 //
 // v3.25 changes over v3.24 (user report, 2026-10-31):
 //   - The combined like|bad pill now hugs its content: the

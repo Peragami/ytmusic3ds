@@ -115,7 +115,11 @@ static void draw_thumb(int bank, int idx, float x, float y, float size,
         C2D_DrawImageAt(*img, x, y, 0.4f, NULL, size / d, size / d);
         return;
     }
-    draw_rrect(x, y, size, size, size * 0.14f,
+    // Placeholder rounding follows the texture rounding:
+    // gentle on the big jacket (v3.26), chunkier on list
+    // thumbnails.
+    draw_rrect(x, y, size, size,
+               size * (size >= 100 ? 0.05f : 0.14f),
                is_playing ? COL_ACCENT : COL_THUMB);
     draw_icon(ICON_MUSIC_NOTE, x + size * 0.22f, y + size * 0.22f,
               size * 0.56f, COL_DIM);
@@ -382,7 +386,8 @@ static void draw_top_player_scene(void) {
     } else {
         draw_thumb(THUMB_BANK_NP, 0, 96, 12, 208, 1);
     }
-    txt(12, 226, 0.42f, COL_FAINT, "Y: 一覧に戻る");
+    // v3.26 (user request): no "Y: 一覧に戻る" hint on the top
+    // screen - the jacket view stays clean like the real app.
     if (g_lyrics_state == 1)
         txt(300, 226, 0.42f, COL_DIM, "歌詞あり");
 }
