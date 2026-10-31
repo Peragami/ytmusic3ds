@@ -6,6 +6,88 @@
 
 #include <stdlib.h>
 
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+// ---------- crash-safe writes (v3.33, user request) ----------
+// Every data file (favourites, config, likes, dislikes, the
+// thumbnail cache) used to be overwritten in place; if the
+// 3DS died mid-write the file was torn and the data was gone.
+// Now the new content goes to "<path>.tmp" and is renamed
+// over the target only once fully written, rotating the old
+// file through "<path>.bak" for one step (rename on this
+// filesystem does not replace, so the dance is: current ->
+// .bak, .tmp -> current, drop .bak). A crash anywhere in the
+// dance leaves either the old or the new file readable, and
+// store_recover() at boot tidies up the remains.
+FILE *atomic_open(const char *path, char *tmp_out, size_t tmp_cap) {
+    snprintf(tmp_out, tmp_cap, "%s.tmp", path);
+    return fopen(tmp_out, "w");
+}
+
+int atomic_commit(FILE *f, const char *tmp_path, const char *path) {
+    if (!f) return -1;
+    fflush(f);
+    fsync(fileno(f)); // best effort; the rename dance is the net
+    if (fclose(f) != 0) {
+        remove(tmp_path);
+        return -1;
+    }
+    char bak[224];
+    snprintf(bak, sizeof(bak), "%s.bak", path);
+    remove(bak);
+    rename(path, bak); // fine if the target does not exist yet
+    if (rename(tmp_path, path) != 0) {
+        rename(bak, path); // roll back
+        remove(tmp_path);
+        return -1;
+    }
+    remove(bak);
+    return 0;
+}
+
+void atomic_abort(FILE *f, const char *tmp_path) {
+    if (f) fclose(f);
+    remove(tmp_path);
+}
+
+static int path_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+// Boot recovery: for each data file, if the current file is
+// missing but a .bak survived an interrupted rename, put the
+// .bak back; drop stale .bak/.tmp leftovers, including any
+// torn cache writes in cache/.
+void store_recover(void) {
+    static const char *names[] = {"favorites.txt", "config.txt",
+                                  "likes.txt", "dislikes.txt"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        char p[192], t[200], b[200];
+        snprintf(p, sizeof(p), APP_DIR "/%s", names[i]);
+        snprintf(t, sizeof(t), "%s.tmp", p);
+        snprintf(b, sizeof(b), "%s.bak", p);
+        if (!path_exists(p) && path_exists(b)) rename(b, p);
+        if (path_exists(p)) remove(b);
+        remove(t);
+    }
+    DIR *d = opendir(APP_DIR "/cache");
+    if (d) {
+        struct dirent *e;
+        char p[256];
+        while ((e = readdir(d)) != NULL) {
+            size_t n = strlen(e->d_name);
+            if (n > 4 && strcmp(e->d_name + n - 4, ".tmp") == 0) {
+                snprintf(p, sizeof(p), APP_DIR "/cache/%s", e->d_name);
+                remove(p);
+            }
+        }
+        closedir(d);
+    }
+}
+
 // ---------- favourites ----------
 result_t g_favs[THUMB_MAX_FAVS];
 int g_fav_count = 0;
@@ -22,7 +104,8 @@ static void sanitize_field(char *s) {
 }
 
 void favs_save(void) {
-    FILE *f = fopen(FAV_PATH, "w");
+    char tmp[200];
+    FILE *f = atomic_open(FAV_PATH, tmp, sizeof(tmp));
     if (!f) return;
     for (int i = 0; i < g_fav_count; i++) {
         char id[VID_LEN], t[TITLE_LEN], s[SUB_LEN];
@@ -36,7 +119,7 @@ void favs_save(void) {
         sanitize_field(s);
         fprintf(f, "%s\t%s\t%s\n", id, t, s);
     }
-    fclose(f);
+    atomic_commit(f, tmp, FAV_PATH);
 }
 
 // Previous versions' data folders, newest first. The first
@@ -44,7 +127,7 @@ void favs_save(void) {
 // of these actually has the file (v3.20: the old single-folder
 // fallback could resurrect stale data after several OTA hops).
 static const char *legacy_dirs[] = {
-    "ytmusic3ds-v3.31", "ytmusic3ds-v3.30", "ytmusic3ds-v3.29", "ytmusic3ds-v3.28", "ytmusic3ds-v3.27", "ytmusic3ds-v3.26", "ytmusic3ds-v3.25", "ytmusic3ds-v3.24", "ytmusic3ds-v3.23", "ytmusic3ds-v3.22", "ytmusic3ds-v3.21", "ytmusic3ds-v3.20", "ytmusic3ds-v3.19", "ytmusic3ds-v3.18", "ytmusic3ds-v3.17",
+    "ytmusic3ds-v3.32", "ytmusic3ds-v3.31", "ytmusic3ds-v3.30", "ytmusic3ds-v3.29", "ytmusic3ds-v3.28", "ytmusic3ds-v3.27", "ytmusic3ds-v3.26", "ytmusic3ds-v3.25", "ytmusic3ds-v3.24", "ytmusic3ds-v3.23", "ytmusic3ds-v3.22", "ytmusic3ds-v3.21", "ytmusic3ds-v3.20", "ytmusic3ds-v3.19", "ytmusic3ds-v3.18", "ytmusic3ds-v3.17",
     "ytmusic3ds-v3.16", "ytmusic3ds-v3.15", "ytmusic3ds-v3.14",
     "ytmusic3ds-v3.13", "ytmusic3ds-v3.12", "ytmusic3ds-v3.11",
 };
@@ -117,13 +200,14 @@ char g_self_path[320] = "";
 char g_update_msg[96] = "";
 
 void config_save(void) {
-    FILE *f = fopen(CFG_PATH, "w");
+    char tmp[200];
+    FILE *f = atomic_open(CFG_PATH, tmp, sizeof(tmp));
     if (!f) return;
     fprintf(f, "quality=%d\nthumbs=%d\nshuffle=%d\nrepeat=%d\n",
             g_quality, g_thumbs_on, g_shuffle, g_repeat);
     fprintf(f, "kana=%d\n", g_kana_on);
     if (g_update_url[0]) fprintf(f, "update_url=%s\n", g_update_url);
-    fclose(f);
+    atomic_commit(f, tmp, CFG_PATH);
 }
 
 void config_load(void) {
@@ -172,12 +256,38 @@ int dislike_has(const char *id) {
     return found;
 }
 
-void dislike_add(const char *id) {
-    if (dislike_has(id)) return;
-    FILE *f = fopen(DISLIKE_PATH, "a");
-    if (!f) return;
-    fprintf(f, "%s\n", id);
+// Shared id-list load/save for likes.txt and dislikes.txt.
+static int id_list_load(const char *path, char (*ids)[16], int max) {
+    int n = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[32];
+    while (n < max && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (!line[0]) continue;
+        snprintf(ids[n], 16, "%s", line);
+        n++;
+    }
     fclose(f);
+    return n;
+}
+
+static void id_list_save(const char *path, char (*ids)[16], int n) {
+    char tmp[200];
+    FILE *f = atomic_open(path, tmp, sizeof(tmp));
+    if (!f) return;
+    for (int i = 0; i < n; i++) fprintf(f, "%s\n", ids[i]);
+    atomic_commit(f, tmp, path);
+}
+
+void dislike_add(const char *id) {
+    static char ids[512][16];
+    int n = id_list_load(DISLIKE_PATH, ids, 512);
+    for (int i = 0; i < n; i++)
+        if (strcmp(ids[i], id) == 0) return;
+    if (n >= 512) return;
+    snprintf(ids[n], 16, "%s", id);
+    id_list_save(DISLIKE_PATH, ids, n + 1);
 }
 
 // ---------- likes (Like button, v3.24) ----------
@@ -203,31 +313,19 @@ int like_has(const char *id) {
 // Returns 1 when the song is liked after the call, 0 when not.
 int like_toggle(const char *id) {
     static char ids[512][16];
-    int n = 0, found = -1;
-    FILE *f = fopen(LIKE_PATH, "r");
-    if (f) {
-        char line[32];
-        while (n < 512 && fgets(line, sizeof(line), f)) {
-            line[strcspn(line, "\r\n")] = '\0';
-            if (!line[0]) continue;
-            if (strcmp(line, id) == 0) found = n;
-            snprintf(ids[n], sizeof(ids[n]), "%s", line);
-            n++;
-        }
-        fclose(f);
-    }
+    int n = id_list_load(LIKE_PATH, ids, 512);
+    int found = -1;
+    for (int i = 0; i < n; i++)
+        if (strcmp(ids[i], id) == 0) found = i;
     if (found >= 0) {
-        f = fopen(LIKE_PATH, "w");
-        if (!f) return 1;
-        for (int i = 0; i < n; i++)
-            if (i != found) fprintf(f, "%s\n", ids[i]);
-        fclose(f);
+        for (int i = found; i + 1 < n; i++)
+            memcpy(ids[i], ids[i + 1], 16);
+        id_list_save(LIKE_PATH, ids, n - 1);
         return 0;
     }
-    f = fopen(LIKE_PATH, "a");
-    if (!f) return 0;
-    fprintf(f, "%s\n", id);
-    fclose(f);
+    if (n >= 512) return 0;
+    snprintf(ids[n], 16, "%s", id);
+    id_list_save(LIKE_PATH, ids, n + 1);
     return 1;
 }
 

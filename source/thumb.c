@@ -2,6 +2,8 @@
 
 #include "thumb.h"
 
+#include "store.h" // atomic_open/atomic_commit (v3.33)
+
 #include "app.h" // APP_DIR (disk cache location, v3.27)
 
 #include <3ds.h>
@@ -402,16 +404,58 @@ static int cache_load(const char *id, int hq, membuf_t *out) {
 static void cache_store(const char *id, int hq, const membuf_t *mb) {
     char path[160];
     cache_path(path, sizeof(path), id, hq);
-    FILE *f = fopen(path, "wb");
+    // v3.33: same crash-safe write as the data files - a torn
+    // JPEG must never land under the final name.
+    char tmp[200];
+    FILE *f = atomic_open(path, tmp, sizeof(tmp));
     if (!f) return;
     fwrite(mb->data, 1, mb->len, f);
-    fclose(f);
+    atomic_commit(f, tmp, path);
 }
 
-static int fetch_jpeg(const char *id, int hq, membuf_t *out) {
-    if (cache_load(id, hq, out) == 0) return 0;
+static void cache_remove(const char *id, int hq) {
+    char path[160];
+    cache_path(path, sizeof(path), id, hq);
+    remove(path);
+}
+
+static int fetch_jpeg(const char *id, int hq, membuf_t *out,
+                      int *from_cache) {
+    *from_cache = 0;
+    if (cache_load(id, hq, out) == 0) {
+        *from_cache = 1;
+        return 0;
+    }
     int rc = download_jpeg(id, hq, out);
     if (rc == 0) cache_store(id, hq, out);
+    return rc;
+}
+
+// One fetch+decode attempt at one quality. A cached file
+// that fails to decode (torn by a sudden power loss in an
+// older version, say) is deleted and downloaded fresh once.
+static int fetch_decode_try(const char *video_id, int hq,
+                            uint8_t **rgb_out, int *w_out,
+                            int *h_out) {
+    membuf_t mb;
+    memset(&mb, 0, sizeof(mb));
+    int from_cache = 0;
+    int rc = -1;
+    if (fetch_jpeg(video_id, hq, &mb, &from_cache) == 0) {
+        if (decode_jpeg_rgb(mb.data, mb.len, rgb_out, w_out,
+                            h_out) == 0) {
+            rc = 0;
+        } else if (from_cache) {
+            cache_remove(video_id, hq);
+            free(mb.data);
+            memset(&mb, 0, sizeof(mb));
+            if (fetch_jpeg(video_id, hq, &mb, &from_cache) == 0 &&
+                decode_jpeg_rgb(mb.data, mb.len, rgb_out, w_out,
+                                h_out) == 0)
+                rc = 0;
+        }
+    }
+    free(mb.data);
     return rc;
 }
 
@@ -419,21 +463,12 @@ static int fetch_jpeg(const char *id, int hq, membuf_t *out) {
 // thread; the main thread uploads via thumb_job_commit.
 static int fetch_decode(int bank, const char *video_id,
                         uint8_t **rgb_out, int *w_out, int *h_out) {
-    membuf_t mb;
-    memset(&mb, 0, sizeof(mb));
     // The now-playing bank wants the larger hqdefault image; fall
     // back to mqdefault when a video has no usable hq image.
-    int dl = fetch_jpeg(video_id, bank == THUMB_BANK_NP, &mb);
-    if (dl != 0 && bank == THUMB_BANK_NP) {
-        free(mb.data);
-        memset(&mb, 0, sizeof(mb));
-        dl = fetch_jpeg(video_id, 0, &mb);
-    }
-    int rc = -1;
-    if (dl == 0 &&
-        decode_jpeg_rgb(mb.data, mb.len, rgb_out, w_out, h_out) == 0)
-        rc = 0;
-    free(mb.data);
+    int hq = bank == THUMB_BANK_NP;
+    int rc = fetch_decode_try(video_id, hq, rgb_out, w_out, h_out);
+    if (rc != 0 && hq)
+        rc = fetch_decode_try(video_id, 0, rgb_out, w_out, h_out);
     return rc;
 }
 

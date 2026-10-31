@@ -1,4 +1,13 @@
-// ytmusic3ds v3.32 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.33 - YouTube Music style client for (Old) 3DS.
+//
+// v3.33 changes over v3.32 (user request, 2026-10-31):
+//   - Crash safety: if the 3DS dies suddenly, saved data must
+//     survive. Favourites, config, likes, dislikes and the
+//     thumbnail cache are now written via a .tmp file and an
+//     atomic rename (with a one-step .bak rotation), never
+//     overwritten in place; store_recover() at boot restores
+//     or cleans up after an interrupted write, and a cached
+//     JPEG that fails to decode is dropped and re-downloaded.
 //
 // v3.32 changes over v3.31 (user requests, 2026-10-31):
 //   - Lyrics and the like count are fetched only after
@@ -1041,6 +1050,7 @@ int main(int argc, char **argv) {
     mkdir("sdmc:/3ds", 0777);
     mkdir(APP_DIR, 0777);
     mkdir(APP_DIR "/cache", 0777); // thumbnail disk cache (v3.27)
+    store_recover(); // v3.33: undo any interrupted file write
     config_load();
     favs_load();
 
