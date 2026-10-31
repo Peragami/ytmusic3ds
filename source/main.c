@@ -1,4 +1,12 @@
-// ytmusic3ds v3.31 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.32 - YouTube Music style client for (Old) 3DS.
+//
+// v3.32 changes over v3.31 (user requests, 2026-10-31):
+//   - Lyrics and the like count are fetched only after
+//     playback starts (they used to load during the download).
+//   - The lyrics pill is shown only when the song actually
+//     has lyrics (hidden before the fetch and when none were
+//     found); the save pill slides left to fill the gap.
+//   - The "lyrics available" badge on the top screen is gone.
 //
 // v3.31 changes over v3.30 (user request, 2026-10-31):
 //   - The player screen's jacket is a little bigger
@@ -433,15 +441,16 @@ static void ui_hook(void *user) {
         ctl->stop_requested = 1;
         ctl->exit_requested = 1;
     }
-    // v3.9 deferred fetches: HQ artwork and lyrics load here,
-    // while the song file downloads, instead of blocking the
-    // start of playback. Runs once per song.
-    // HQ artwork loads on the worker thread (v3.18): keep asking
-    // until the job is accepted, and land it via thumb_poll.
+    // Deferred fetches. HQ artwork loads on the worker thread
+    // (v3.18): keep asking until the job is accepted, and land
+    // it via thumb_poll. Lyrics and the like count are fetched
+    // only once playback has actually started (v3.32, user
+    // request) - until then the lyrics pill stays hidden and
+    // appears only if the song really has lyrics.
     if (g_thumbs_on && g_has_np && !thumb_get(THUMB_BANK_NP, 0))
         thumb_job_start(THUMB_BANK_NP, 0, g_np_song.id);
     thumb_poll();
-    if (g_deferred_pending) {
+    if (g_deferred_pending && ctl->phase == PHASE_PLAY) {
         g_deferred_pending = 0;
         char artist[64];
         artist_from_sub(g_np_song.sub, artist, sizeof(artist));
@@ -691,8 +700,9 @@ static int do_play_once(void) {
         return -1;
     }
     // v3.9: no asset fetches here any more - pressing play goes
-    // straight to the download. The HQ artwork and the lyrics are
-    // fetched by the playback hook while the file downloads (see
+    // straight to the download. The HQ artwork loads on the
+    // worker thread and the lyrics / like count are fetched by
+    // the playback hook once playback starts (see
     // g_deferred_pending), so they never delay the music.
     g_lyrics_state = 0;
     g_np_likes = -1;

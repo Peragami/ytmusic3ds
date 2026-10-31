@@ -306,9 +306,16 @@ static float text_width(const char *str, float scale);
 // hugs its content: the divider sits just after the count, Bad
 // right after the divider, and the Lyrics / Save pills flow
 // after the combined pill. Outputs: divider x, combined pill
-// right edge, lyrics pill x, save pill x.
+// right edge, lyrics pill x, lyrics pill width, save pill x.
+// v3.32 (user request): the lyrics pill exists only when the
+// song really has lyrics (fetched after playback starts);
+// while hidden, Save slides left into its place.
+static int lyrics_ready(void) {
+    return g_lyrics_state == 1 && lyrics_line_count() > 0;
+}
+
 static void pill_layout(int *div_x, int *pill_end, int *lyrics_x,
-                        int *save_x) {
+                        int *lyrics_w, int *save_x) {
     int dx = 46; // no count known: divider right after the icon
     if (g_np_likes >= 0) {
         char lc[24];
@@ -318,7 +325,8 @@ static void pill_layout(int *div_x, int *pill_end, int *lyrics_x,
     *div_x = dx;
     *pill_end = dx + 11 + 18 + 13; // pad + bad icon + pad
     *lyrics_x = *pill_end + 8;
-    *save_x = *lyrics_x + 72 + 8;
+    *lyrics_w = lyrics_ready() ? 72 : 0;
+    *save_x = *lyrics_x + *lyrics_w + (*lyrics_w ? 8 : 0);
 }
 
 // Touch zones on the player screen's bottom half. Layout constants
@@ -328,11 +336,11 @@ static void pill_layout(int *div_x, int *pill_end, int *lyrics_x,
 //   controls y 138..202: five 64px zones (shuffle/prev/play/next/repeat)
 int player_zone(int px, int py) {
     if (py >= 54 && py < 90) {
-        int dx, pe, lx, sx;
-        pill_layout(&dx, &pe, &lx, &sx);
+        int dx, pe, lx, lw, sx;
+        pill_layout(&dx, &pe, &lx, &lw, &sx);
         if (px < dx) return 1;  // like
         if (px < lx) return 2;  // bad
-        if (px < sx) return 3;  // lyrics
+        if (lw > 0 && px < sx) return 3; // lyrics (only when shown)
         return 9;               // save
     }
     if (py >= 138 && py < 202) return 4 + (px / 64); // 4..8
@@ -389,10 +397,9 @@ static void draw_top_player_scene(void) {
     }
     // v3.26 (user request): no "Y: 一覧に戻る" hint on the top
     // screen - the jacket view stays clean like the real app.
-    // The lyrics badge moved beside the jacket (v3.31): at 224
-    // the old spot under the jacket no longer exists.
-    if (g_lyrics_state == 1)
-        txt(320, 12, 0.42f, COL_DIM, "歌詞あり");
+    // v3.32 (user request): the "lyrics available" badge that
+    // used to sit here is gone too; lyrics presence is shown
+    // only by the lyrics pill on the bottom screen appearing.
 }
 
 static void draw_bottom_player(void) {
@@ -417,8 +424,8 @@ static void draw_bottom_player(void) {
     // independent from the Library now (likes.txt); Save is
     // the favourite toggle, same as the X key.
     int liked = like_has(g_np_song.id);
-    int div_x, pill_end, lyrics_x, save_x;
-    pill_layout(&div_x, &pill_end, &lyrics_x, &save_x);
+    int div_x, pill_end, lyrics_x, lyrics_w, save_x;
+    pill_layout(&div_x, &pill_end, &lyrics_x, &lyrics_w, &save_x);
     draw_pill(6, 56, pill_end - 6, 26, COL_CHIP);
     // White OUTLINE when not liked, filled WHITE when liked
     // (v3.22, user request) - it never turns red.
@@ -434,10 +441,12 @@ static void draw_bottom_player(void) {
     draw_icon(dislike_has(g_np_song.id) ? ICON_THUMB_DOWN
                                         : ICON_THUMB_DOWN_OFF,
               div_x + 11, 60, 18, COL_WHITE);
-    draw_pill(lyrics_x, 56, 72, 26, COL_CHIP);
-    draw_icon(ICON_LYRICS, lyrics_x + 8, 60, 18,
-              g_lyrics_view ? COL_ACCENT : COL_WHITE);
-    txt(lyrics_x + 32, 61, 0.5f, COL_WHITE, "歌詞");
+    if (lyrics_w > 0) {
+        draw_pill(lyrics_x, 56, 72, 26, COL_CHIP);
+        draw_icon(ICON_LYRICS, lyrics_x + 8, 60, 18,
+                  g_lyrics_view ? COL_ACCENT : COL_WHITE);
+        txt(lyrics_x + 32, 61, 0.5f, COL_WHITE, "歌詞");
+    }
     int saved = fav_find(g_np_song.id) >= 0;
     draw_pill(save_x, 56, 66, 26, COL_CHIP);
     draw_icon(saved ? ICON_PLAYLIST_ADD_CHECK : ICON_PLAYLIST_ADD,
