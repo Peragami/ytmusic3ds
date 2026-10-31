@@ -1,4 +1,9 @@
-// ytmusic3ds v3.22 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.23 - YouTube Music style client for (Old) 3DS.
+//
+// v3.23 changes over v3.22 (user request, 2026-10-31):
+//   - Bad button gets the same treatment as Like: white
+//     outline thumb-down when not disliked, filled white when
+//     the song is in dislikes.txt. Adds ICON_THUMB_DOWN_OFF.
 //
 // v3.22 changes over v3.21 (user request, 2026-10-31):
 //   - Like button now matches the real app: a white outline

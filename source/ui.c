@@ -392,7 +392,11 @@ static void draw_bottom_player(void) {
         txt(42, 61, 0.5f, COL_WHITE, lc);
     }
     draw_pill(120, 56, 48, 26, COL_CHIP);
-    draw_icon(ICON_THUMB_DOWN, 135, 60, 18, COL_WHITE);
+    // Same treatment as Like (v3.23, user request): white
+    // outline when not disliked, filled white when disliked.
+    draw_icon(dislike_has(g_np_song.id) ? ICON_THUMB_DOWN
+                                        : ICON_THUMB_DOWN_OFF,
+              135, 60, 18, COL_WHITE);
     draw_pill(176, 56, 48, 26, COL_CHIP);
     draw_icon(ICON_SUBJECT, 191, 60, 18,
               g_lyrics_view ? COL_ACCENT : COL_WHITE);
