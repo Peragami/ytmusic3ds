@@ -294,17 +294,41 @@ static void fmt_count(char *out, size_t cap, long n) {
         snprintf(out, cap, "%.1f%s", v, unit);
 }
 
+static float text_width(const char *str, float scale);
+
+// Player pill layout (v3.25, user report: with a short like
+// count the fixed divider position left a wide empty gap
+// between Like and Bad). Like the real app, the combined pill
+// hugs its content: the divider sits just after the count, Bad
+// right after the divider, and the Lyrics / Save pills flow
+// after the combined pill. Outputs: divider x, combined pill
+// right edge, lyrics pill x, save pill x.
+static void pill_layout(int *div_x, int *pill_end, int *lyrics_x,
+                        int *save_x) {
+    int dx = 46; // no count known: divider right after the icon
+    if (g_np_likes >= 0) {
+        char lc[24];
+        fmt_count(lc, sizeof(lc), g_np_likes);
+        dx = 40 + (int)(text_width(lc, 0.5f) + 0.5f) + 12;
+    }
+    *div_x = dx;
+    *pill_end = dx + 11 + 18 + 13; // pad + bad icon + pad
+    *lyrics_x = *pill_end + 8;
+    *save_x = *lyrics_x + 72 + 8;
+}
+
 // Touch zones on the player screen's bottom half. Layout constants
 // are shared by the drawing code and the hit tests:
-//   pills row y 54..90 (v3.24 real-app layout): combined
-//   like|bad pill like x<124, bad x<168; lyrics pill x<246;
-//   save pill is zone 9
+//   pills row y 54..90: combined like|bad pill (divider from
+//   pill_layout), then the lyrics pill, then save (zone 9)
 //   controls y 138..202: five 64px zones (shuffle/prev/play/next/repeat)
 int player_zone(int px, int py) {
     if (py >= 54 && py < 90) {
-        if (px < 124) return 1; // like
-        if (px < 168) return 2; // bad
-        if (px < 246) return 3; // lyrics
+        int dx, pe, lx, sx;
+        pill_layout(&dx, &pe, &lx, &sx);
+        if (px < dx) return 1;  // like
+        if (px < lx) return 2;  // bad
+        if (px < sx) return 3;  // lyrics
         return 9;               // save
     }
     if (py >= 138 && py < 202) return 4 + (px / 64); // 4..8
@@ -385,7 +409,9 @@ static void draw_bottom_player(void) {
     // independent from the Library now (likes.txt); Save is
     // the favourite toggle, same as the X key.
     int liked = like_has(g_np_song.id);
-    draw_pill(6, 56, 160, 26, COL_CHIP);
+    int div_x, pill_end, lyrics_x, save_x;
+    pill_layout(&div_x, &pill_end, &lyrics_x, &save_x);
+    draw_pill(6, 56, pill_end - 6, 26, COL_CHIP);
     // White OUTLINE when not liked, filled WHITE when liked
     // (v3.22, user request) - it never turns red.
     draw_icon(liked ? ICON_THUMB_UP : ICON_THUMB_UP_OFF,
@@ -395,20 +421,20 @@ static void draw_bottom_player(void) {
         fmt_count(lc, sizeof(lc), g_np_likes);
         txt(40, 61, 0.5f, COL_WHITE, lc);
     }
-    C2D_DrawRectSolid(124, 62, 0.42f, 1.5f, 14, COL_DIM);
+    C2D_DrawRectSolid(div_x, 62, 0.42f, 1.5f, 14, COL_DIM);
     // Bad: same treatment (v3.23) - outline / filled white.
     draw_icon(dislike_has(g_np_song.id) ? ICON_THUMB_DOWN
                                         : ICON_THUMB_DOWN_OFF,
-              136, 60, 18, COL_WHITE);
-    draw_pill(172, 56, 72, 26, COL_CHIP);
-    draw_icon(ICON_LYRICS, 180, 60, 18,
+              div_x + 11, 60, 18, COL_WHITE);
+    draw_pill(lyrics_x, 56, 72, 26, COL_CHIP);
+    draw_icon(ICON_LYRICS, lyrics_x + 8, 60, 18,
               g_lyrics_view ? COL_ACCENT : COL_WHITE);
-    txt(204, 61, 0.5f, COL_WHITE, "歌詞");
+    txt(lyrics_x + 32, 61, 0.5f, COL_WHITE, "歌詞");
     int saved = fav_find(g_np_song.id) >= 0;
-    draw_pill(250, 56, 66, 26, COL_CHIP);
+    draw_pill(save_x, 56, 66, 26, COL_CHIP);
     draw_icon(saved ? ICON_PLAYLIST_ADD_CHECK : ICON_PLAYLIST_ADD,
-              257, 60, 18, COL_WHITE);
-    txt(281, 61, 0.5f, COL_WHITE, "保存");
+              save_x + 7, 60, 18, COL_WHITE);
+    txt(save_x + 31, 61, 0.5f, COL_WHITE, "保存");
     // Message line. The routine "Playing" status is not shown
     // (v3.16 user request); real messages still are.
     const char *msg = g_playback_view ? ctl->message : g_status;

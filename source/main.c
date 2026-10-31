@@ -1,4 +1,12 @@
-// ytmusic3ds v3.24 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.25 - YouTube Music style client for (Old) 3DS.
+//
+// v3.25 changes over v3.24 (user report, 2026-10-31):
+//   - The combined like|bad pill now hugs its content: the
+//     divider sits just after the like count and Bad right
+//     after it, instead of at a fixed position that left a
+//     wide empty gap with short counts. The lyrics and save
+//     pills flow after it. Layout is shared between the
+//     drawing code and the touch zones (pill_layout in ui.c).
 //
 // v3.24 changes over v3.23 (user request, 2026-10-31): the
 //   player pills now match the real app, compared against the
