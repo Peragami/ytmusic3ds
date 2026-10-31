@@ -347,41 +347,149 @@ int player_zone(int px, int py) {
     return 0;
 }
 
+// ---------- two-screen lyrics (v3.34) ----------
+// The lyrics are wrapped once per song into display rows
+// narrow enough for the bottom screen, so the top and bottom
+// scenes read as one continuous sheet, like the real app's
+// full-screen lyrics.
+#define LYR_SCALE 0.62f
+#define LYR_TOP_Y 46
+#define LYR_TOP_ROWS 6
+#define LYR_BOT_Y 12
+#define LYR_BOT_ROWS 7
+#define LYR_VISIBLE_ROWS (LYR_TOP_ROWS + LYR_BOT_ROWS)
+#define LYR_WRAP_W 292.0f
+#define LYR_MAX_ROWS 220
+#define LYR_ROW_CAP 100
+
+static char g_lyr_rows[LYR_MAX_ROWS][LYR_ROW_CAP];
+static int g_lyr_nrows = 0;
+static char g_lyr_key[16] = "";
+
+static int utf8_chr_len(unsigned char c) {
+    return (c & 0x80) == 0 ? 1 : (c & 0xE0) == 0xC0 ? 2
+           : (c & 0xF0) == 0xE0 ? 3
+                               : 4;
+}
+
+static void lyrics_rows_build(void) {
+    g_lyr_nrows = 0;
+    int total = lyrics_line_count();
+    for (int li = 0; li < total && g_lyr_nrows < LYR_MAX_ROWS;
+         li++) {
+        const char *line = lyrics_line(li);
+        if (!line[0]) { // blank line: keep it as spacing
+            g_lyr_rows[g_lyr_nrows][0] = '\0';
+            g_lyr_nrows++;
+            continue;
+        }
+        const char *p = line;
+        while (*p && g_lyr_nrows < LYR_MAX_ROWS) {
+            char cand[LYR_ROW_CAP];
+            int cl = 0;
+            const char *q = p;
+            while (*q) {
+                int chl = utf8_chr_len((unsigned char)*q);
+                if (cl + chl >= LYR_ROW_CAP) break;
+                memcpy(cand + cl, q, (size_t)chl);
+                cl += chl;
+                cand[cl] = '\0';
+                if (text_width(cand, LYR_SCALE) > LYR_WRAP_W) {
+                    cl -= chl;
+                    cand[cl] = '\0';
+                    break;
+                }
+                q += chl;
+            }
+            if (cl == 0) { // one char alone is too wide: take it
+                int chl = utf8_chr_len((unsigned char)*q);
+                memcpy(cand, q, (size_t)chl);
+                cl = chl;
+                cand[cl] = '\0';
+                q += chl;
+            }
+            memcpy(g_lyr_rows[g_lyr_nrows], cand, (size_t)cl + 1);
+            g_lyr_nrows++;
+            p = q;
+        }
+    }
+    snprintf(g_lyr_key, sizeof(g_lyr_key), "%s", g_np_song.id);
+}
+
+static void lyrics_rows_ensure(void) {
+    if (g_lyrics_state != 1) {
+        g_lyr_nrows = 0;
+        g_lyr_key[0] = '\0';
+        return;
+    }
+    if (g_lyr_nrows == 0 ||
+        strcmp(g_lyr_key, g_np_song.id) != 0)
+        lyrics_rows_build();
+}
+
+// Bottom half of the lyrics sheet: the rows continue from
+// the top screen, then a page indicator and the close hint.
+static void draw_bottom_lyrics(void) {
+    if (g_lyrics_state == 1 && lyrics_line_count() > 0) {
+        lyrics_rows_ensure();
+        int max_scroll = g_lyr_nrows - LYR_VISIBLE_ROWS;
+        if (max_scroll < 0) max_scroll = 0;
+        if (g_lyrics_scroll > max_scroll)
+            g_lyrics_scroll = max_scroll;
+        if (g_lyrics_scroll < 0) g_lyrics_scroll = 0;
+        for (int i = 0; i < LYR_BOT_ROWS; i++) {
+            int row = g_lyrics_scroll + LYR_TOP_ROWS + i;
+            if (row >= g_lyr_nrows) break;
+            txt(12, LYR_BOT_Y + i * LYR_PITCH, LYR_SCALE,
+                COL_WHITE, g_lyr_rows[row]);
+        }
+        char pg[32];
+        snprintf(pg, sizeof(pg), "%d/%d", g_lyrics_scroll + 1,
+                 g_lyr_nrows);
+        txt(12, 224, 0.42f, COL_FAINT, pg);
+    } else if (g_lyrics_state == 0) {
+        txt(12, 100, 0.5f, COL_DIM, "歌詞はまだありません");
+    } else {
+        txt(12, 100, 0.5f, COL_DIM, "歌詞が見つかりませんでした");
+    }
+    txt(248, 224, 0.42f, COL_FAINT, "X: 閉じる");
+}
+
 static void draw_top_player_scene(void) {
     if (g_lyrics_view) {
         txt(12, 8, 0.62f, COL_WHITE, "歌詞");
         char t[96];
         utf8_truncate(g_np_song.title, t, sizeof(t), 60);
         txt(70, 12, 0.5f, COL_DIM, t);
-        int total = lyrics_line_count();
         if (g_lyrics_state == 0) {
             txt(12, 70, 0.55f, COL_WHITE,
                 g_playback_view ? "歌詞取得中..."
                                 : "歌詞は再生中に取得します");
-        } else if (g_lyrics_state == 2 || total == 0) {
+        } else if (g_lyrics_state == 2 ||
+                   lyrics_line_count() == 0) {
             txt(12, 70, 0.55f, COL_WHITE,
                 "歌詞が見つかりませんでした");
             txt(12, 98, 0.46f, COL_DIM, lyrics_debug());
         } else {
-            int max_scroll = total - 11;
+            // Two-screen lyrics sheet (v3.34, user request,
+            // styled on the real app): big type, wide spacing,
+            // wrapped lines flowing from the top screen onto
+            // the bottom one. g_lyrics_scroll counts wrapped
+            // display rows, shared by both scenes.
+            lyrics_rows_ensure();
+            int max_scroll = g_lyr_nrows - LYR_VISIBLE_ROWS;
             if (max_scroll < 0) max_scroll = 0;
             if (g_lyrics_scroll > max_scroll)
                 g_lyrics_scroll = max_scroll;
             if (g_lyrics_scroll < 0) g_lyrics_scroll = 0;
-            for (int i = 0; i < 11; i++) {
-                int li = g_lyrics_scroll + i;
-                if (li >= total) break;
-                char line[128];
-                utf8_truncate(lyrics_line(li), line, sizeof(line), 66);
-                txt(12, 40 + i * 18, 0.5f,
-                    line[0] ? COL_WHITE : COL_WHITE, line);
+            for (int i = 0; i < LYR_TOP_ROWS; i++) {
+                int row = g_lyrics_scroll + i;
+                if (row >= g_lyr_nrows) break;
+                txt(12, LYR_TOP_Y + i * LYR_PITCH, LYR_SCALE,
+                    COL_WHITE, g_lyr_rows[row]);
             }
-            char pg[32];
-            snprintf(pg, sizeof(pg), "%d/%d", g_lyrics_scroll + 1,
-                     total);
-            txt(352, 222, 0.42f, COL_FAINT, pg);
         }
-        txt(12, 222, 0.42f, COL_FAINT, "十字キー: スクロール");
+        txt(12, 222, 0.42f, COL_FAINT, "十字キー・ドラッグ: スクロール");
         return;
     }
     // Big jacket artwork centred on the top screen. Until the HQ
@@ -723,7 +831,10 @@ void render(void) {
     C2D_SceneBegin(g_bot_tgt);
     if (g_player_view) {
         draw_tint_bg(320, 0.36f, 0.08f);
-        draw_bottom_player();
+        if (g_lyrics_view)
+            draw_bottom_lyrics();
+        else
+            draw_bottom_player();
     }
     else if (g_playback_view)
         draw_bottom_playback(&g_ctl);

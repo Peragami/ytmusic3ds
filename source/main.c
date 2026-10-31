@@ -1,4 +1,14 @@
-// ytmusic3ds v3.33 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.34 - YouTube Music style client for (Old) 3DS.
+//
+// v3.34 changes over v3.33 (user request, 2026-11-01):
+//   - The lyrics view uses BOTH screens as one continuous
+//     sheet, styled on the real app: bigger type (0.62), wide
+//     line spacing (30 px), lines wrapped by measured width.
+//     g_lyrics_scroll now counts wrapped display rows. The
+//     D-pad scrolls (left/right = one sheet), and dragging a
+//     finger on the bottom screen scrolls too; while the
+//     sheet is up, bottom-screen taps no longer hit the
+//     player controls.
 //
 // v3.33 changes over v3.32 (user request, 2026-10-31):
 //   - Crash safety: if the 3DS dies suddenly, saved data must
@@ -338,6 +348,7 @@ static void thumb_poll(void);
 // from player_zone(); like/bad/lyrics/shuffle/repeat act in place,
 // prev/next/pause drive the player through ctl.
 static void hook_player_touch(play_ctl_t *ctl, int px, int py) {
+    if (g_lyrics_view) return; // lyrics sheet: drag only
     switch (player_zone(px, py)) {
     case 1:
         like_toggle(g_np_song.id);
@@ -376,6 +387,8 @@ static void hook_player_touch(play_ctl_t *ctl, int px, int py) {
     }
     g_last_draw_ms = 0; // redraw promptly
 }
+
+static void lyrics_touch_update(void); // defined below (v3.34)
 
 static void ui_hook(void *user) {
     play_ctl_t *ctl = (play_ctl_t *)user;
@@ -416,6 +429,11 @@ static void ui_hook(void *user) {
         if (g_lyrics_view) {
             if (k & KEY_DOWN) g_lyrics_scroll++;
             if ((k & KEY_UP) && g_lyrics_scroll > 0) g_lyrics_scroll--;
+            if (k & KEY_RIGHT) g_lyrics_scroll += 13; // one sheet
+            if ((k & KEY_LEFT) && g_lyrics_scroll > 0) {
+                g_lyrics_scroll -= 13;
+                if (g_lyrics_scroll < 0) g_lyrics_scroll = 0;
+            }
         }
     } else {
         // List browsing + mid-playback switch (v3.4 behaviour).
@@ -471,6 +489,7 @@ static void ui_hook(void *user) {
         if (likes_fetch(g_np_song.id, &lk) == 0) g_np_likes = lk;
         g_last_draw_ms = 0;
     }
+    lyrics_touch_update(); // v3.34: drag-scroll while playing
     u64 now = osGetTime();
     if (now - g_last_draw_ms >= 150) {
         g_last_draw_ms = now;
@@ -892,7 +911,40 @@ static void play_from_player_view(int which) {
 
 // Touch actions on the idle player screen (same zones as during
 // playback; play/prev/next start the corresponding song).
+// v3.34: while the lyrics sheet is up, the bottom screen is
+// for reading and dragging - taps must not hit the (hidden)
+// player controls, and a held finger scrolls the sheet.
+static int g_lyr_touch_y = -1;
+static int g_lyr_touch_acc = 0;
+static void lyrics_touch_update(void) {
+    if (!g_lyrics_view) {
+        g_lyr_touch_y = -1;
+        return;
+    }
+    if (!(hidKeysHeld() & KEY_TOUCH)) {
+        g_lyr_touch_y = -1;
+        g_lyr_touch_acc = 0;
+        return;
+    }
+    touchPosition tp;
+    hidTouchRead(&tp);
+    if (g_lyr_touch_y >= 0) {
+        g_lyr_touch_acc += g_lyr_touch_y - (int)tp.py;
+        while (g_lyr_touch_acc >= LYR_PITCH) {
+            g_lyrics_scroll++;
+            g_lyr_touch_acc -= LYR_PITCH;
+        }
+        while (g_lyr_touch_acc <= -LYR_PITCH) {
+            if (g_lyrics_scroll > 0) g_lyrics_scroll--;
+            g_lyr_touch_acc += LYR_PITCH;
+        }
+        g_last_draw_ms = 0;
+    }
+    g_lyr_touch_y = tp.py;
+}
+
 static void idle_player_touch(int px, int py) {
+    if (g_lyrics_view) return; // lyrics sheet: drag only
     switch (player_zone(px, py)) {
     case 1: {
         int rc = like_toggle(g_np_song.id);
@@ -1106,6 +1158,7 @@ int main(int argc, char **argv) {
         // Player screen (idle): Y returns to the lists; A replays;
         // L/R play neighbours; X toggles the lyrics view.
         if (g_player_view) {
+            lyrics_touch_update(); // v3.34: drag-scroll
             if (k & KEY_Y) {
                 g_player_view = 0;
             } else if (k & KEY_A) {
@@ -1125,6 +1178,12 @@ int main(int argc, char **argv) {
             } else if (g_lyrics_view && (k & KEY_UP) &&
                        g_lyrics_scroll > 0) {
                 g_lyrics_scroll--;
+            } else if (g_lyrics_view && (k & KEY_RIGHT)) {
+                g_lyrics_scroll += 13; // one sheet
+            } else if (g_lyrics_view && (k & KEY_LEFT) &&
+                       g_lyrics_scroll > 0) {
+                g_lyrics_scroll -= 13;
+                if (g_lyrics_scroll < 0) g_lyrics_scroll = 0;
             }
             render();
             continue;

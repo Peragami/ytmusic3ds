@@ -20,8 +20,8 @@
 #include "thumb.h"  // THUMB_MAX_*
 
 // ---------- paths ----------
-#define APP_VER "3.33"
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.33"
+#define APP_VER "3.34"
+#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.34"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
@@ -73,6 +73,9 @@ extern int g_has_np;
 extern int g_player_view;
 extern int g_lyrics_view;
 extern int g_lyrics_scroll;
+// Display-row pitch of the two-screen lyrics sheet (v3.34);
+// shared by the renderer (ui.c) and the drag handler (main.c).
+#define LYR_PITCH 30
 extern int g_shuffle;
 extern int g_repeat;
 extern int g_deferred_pending;
