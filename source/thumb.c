@@ -30,6 +30,17 @@ static Tex3DS_SubTexture g_sub[3][THUMB_MAX_FAVS];
 static C2D_Image g_img[3][THUMB_MAX_FAVS];
 static char g_has[3][THUMB_MAX_FAVS];
 static char g_np_id[16] = "";
+// Average colour of the uploaded NP jacket (v3.28).
+static int g_np_avg[3] = {0, 0, 0};
+static int g_np_avg_ok = 0;
+
+int thumb_np_avg(int out[3]) {
+    if (!g_np_avg_ok) return 0;
+    out[0] = g_np_avg[0];
+    out[1] = g_np_avg[1];
+    out[2] = g_np_avg[2];
+    return 1;
+}
 
 // ---------- download ----------
 
@@ -268,6 +279,7 @@ static int upload_texture(int bank, int idx, const uint8_t *rgb, int w,
     u32 *px = (u32 *)tex->data;
     int side, x0, y0;
     art_crop(rgb, w, h, &x0, &y0, &side);
+    unsigned long acc_r = 0, acc_g = 0, acc_b = 0, acc_n = 0;
     // v3.26 (user report): the jacket's corners were too
     // round at 12% - the real app barely rounds them. The
     // now-playing bank uses 5%; list thumbnails keep 12%
@@ -289,6 +301,12 @@ static int upload_texture(int bank, int idx, const uint8_t *rgb, int w,
             int sx = x0 + (x * side) / dim;
             const uint8_t *p = rgb + ((size_t)sy * w + sx) * 3;
             u32 r = p[0], g = p[1], b = p[2];
+            if (bank == THUMB_BANK_NP) {
+                acc_r += r;
+                acc_g += g;
+                acc_b += b;
+                acc_n++;
+            }
             // GPU_RGBA8 texels are stored A,B,G,R in memory
             // (v3.10 fix: the old packing put R first, which the
             // GPU read as alpha - red became transparency and the
@@ -296,6 +314,12 @@ static int upload_texture(int bank, int idx, const uint8_t *rgb, int w,
             px[morton_offset(x, y, dim)] =
                 (r << 24) | (g << 16) | (b << 8) | alpha;
         }
+    }
+    if (bank == THUMB_BANK_NP && acc_n > 0) {
+        g_np_avg[0] = (int)(acc_r / acc_n);
+        g_np_avg[1] = (int)(acc_g / acc_n);
+        g_np_avg[2] = (int)(acc_b / acc_n);
+        g_np_avg_ok = 1;
     }
     C3D_TexSetFilter(tex, GPU_LINEAR, GPU_LINEAR);
     C3D_TexFlush(tex);
@@ -325,7 +349,10 @@ static void clear_slot(int bank, int idx) {
 void thumbs_clear_bank(int bank) {
     if (bank < 0 || bank > 2) return;
     for (int i = 0; i < bank_cap[bank]; i++) clear_slot(bank, i);
-    if (bank == THUMB_BANK_NP) g_np_id[0] = '\0';
+    if (bank == THUMB_BANK_NP) {
+        g_np_id[0] = '\0';
+        g_np_avg_ok = 0;
+    }
 }
 
 void thumbs_clear_all(void) {

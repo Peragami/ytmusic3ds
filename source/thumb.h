@@ -50,5 +50,9 @@ C2D_Image *thumb_get(int bank, int idx);
 // now-playing: 128 from the larger hqdefault image). The UI needs
 // it to compute draw scale factors.
 int thumb_dim(int bank);
+// Average colour of the current now-playing jacket (v3.28,
+// for the player background tint). Returns 1 and fills
+// out[0..2] with r,g,b when a jacket has been uploaded.
+int thumb_np_avg(int out[3]);
 
 #endif // THUMB_H

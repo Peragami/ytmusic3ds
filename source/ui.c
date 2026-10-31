@@ -671,22 +671,48 @@ static void draw_bottom_idle(void) {
     draw_nav();
 }
 
+// Player-view background (v3.28, user request): like the
+// real app, the background is tinted with the jacket's
+// average colour, as a vertical gradient fading toward
+// black. Drawn as horizontal bands right after the clear,
+// behind everything else. No jacket yet = plain black.
+static void draw_tint_bg(float w, float top_scale, float bot_scale) {
+    int avg[3];
+    if (!thumb_np_avg(avg)) return;
+    const int bands = 20;
+    for (int i = 0; i < bands; i++) {
+        float f = (float)i / bands;
+        float s = top_scale + (bot_scale - top_scale) * f;
+        int r = (int)(avg[0] * s), g = (int)(avg[1] * s),
+            b = (int)(avg[2] * s);
+        if (r > 120) r = 120;
+        if (g > 120) g = 120;
+        if (b > 120) b = 120;
+        C2D_DrawRectSolid(0, f * 240.0f, 0.05f, w, 240.0f / bands + 1,
+                          C2D_Color32(r, g, b, 255));
+    }
+}
+
 // ---------- frame ----------
 void render(void) {
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
     C2D_TextBufClear(g_textbuf);
     C2D_TargetClear(g_top_tgt, COL_BG);
     C2D_SceneBegin(g_top_tgt);
-    if (g_player_view)
+    if (g_player_view) {
+        draw_tint_bg(400, 0.55f, 0.20f);
         draw_top_player_scene();
+    }
     else if (g_tab == TAB_SETTINGS && !g_playback_view)
         draw_settings_scene();
     else
         draw_list_scene();
     C2D_TargetClear(g_bot_tgt, COL_BG);
     C2D_SceneBegin(g_bot_tgt);
-    if (g_player_view)
+    if (g_player_view) {
+        draw_tint_bg(320, 0.36f, 0.08f);
         draw_bottom_player();
+    }
     else if (g_playback_view)
         draw_bottom_playback(&g_ctl);
     else

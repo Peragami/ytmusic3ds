@@ -1,4 +1,11 @@
-// ytmusic3ds v3.27 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.28 - YouTube Music style client for (Old) 3DS.
+//
+// v3.28 changes over v3.27 (user request, 2026-10-31):
+//   - The player view's background is tinted with the
+//     now-playing jacket's average colour (vertical gradient
+//     toward black on both screens), like the real app. The
+//     average is measured while the jacket texture is
+//     uploaded (thumb_np_avg). List screens stay black.
 //
 // v3.27 changes over v3.26 (user requests, 2026-10-31):
 //   - The app now boots into the Library tab (the user's
