@@ -1,4 +1,12 @@
-// ytmusic3ds v3.26 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.27 - YouTube Music style client for (Old) 3DS.
+//
+// v3.27 changes over v3.26 (user requests, 2026-10-31):
+//   - The app now boots into the Library tab (the user's
+//     favourites, loaded from the app folder) instead of
+//     opening the search prompt every time.
+//   - Thumbnails and jackets are cached on disk in
+//     APP_DIR/cache/<id>_<hq|mq>.jpg and reused on later
+//     launches, so saved songs show their art instantly.
 //
 // v3.26 changes over v3.25 (user requests, 2026-10-31):
 //   - Removed the "Y: 一覧に戻る" hint from the top (jacket)
@@ -971,11 +979,15 @@ int main(int argc, char **argv) {
     // ("cannot create temp file"). Create it up front.
     mkdir("sdmc:/3ds", 0777);
     mkdir(APP_DIR, 0777);
+    mkdir(APP_DIR "/cache", 0777); // thumbnail disk cache (v3.27)
     config_load();
     favs_load();
 
     draw_all();
-    do_search_flow();
+    // v3.27 (user request): boot into the Library tab - the app
+    // opens on the user's saved songs instead of the search
+    // prompt. Search stays one tab away.
+    switch_tab(TAB_LIBRARY);
 
     int exit_now = 0;
     while (aptMainLoop() && !exit_now) {

@@ -2,6 +2,8 @@
 
 #include "thumb.h"
 
+#include "app.h" // APP_DIR (disk cache location, v3.27)
+
 #include <3ds.h>
 #include <curl/curl.h>
 #include <jpeglib.h>
@@ -330,6 +332,62 @@ void thumbs_clear_all(void) {
     for (int b = 0; b < 3; b++) thumbs_clear_bank(b);
 }
 
+// ---------- disk cache (v3.27, user request) ----------
+// Downloaded JPEGs are kept in APP_DIR/cache/<id>_<hq|mq>.jpg,
+// next to favorites.txt, so list art and jackets reappear
+// instantly on later launches without touching the network.
+// The worker thread is the only reader/writer.
+#define THUMB_CACHE_DIR APP_DIR "/cache"
+
+static void cache_path(char *out, size_t cap, const char *id, int hq) {
+    snprintf(out, cap, THUMB_CACHE_DIR "/%s_%s.jpg", id,
+             hq ? "hq" : "mq");
+}
+
+static int cache_load(const char *id, int hq, membuf_t *out) {
+    char path[160];
+    cache_path(path, sizeof(path), id, hq);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 1024 || sz > MAX_JPEG_BYTES) {
+        fclose(f);
+        return -1;
+    }
+    out->data = (uint8_t *)malloc((size_t)sz);
+    if (!out->data) {
+        fclose(f);
+        return -1;
+    }
+    if (fread(out->data, 1, (size_t)sz, f) != (size_t)sz) {
+        free(out->data);
+        out->data = NULL;
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    out->len = (size_t)sz;
+    return 0;
+}
+
+static void cache_store(const char *id, int hq, const membuf_t *mb) {
+    char path[160];
+    cache_path(path, sizeof(path), id, hq);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(mb->data, 1, mb->len, f);
+    fclose(f);
+}
+
+static int fetch_jpeg(const char *id, int hq, membuf_t *out) {
+    if (cache_load(id, hq, out) == 0) return 0;
+    int rc = download_jpeg(id, hq, out);
+    if (rc == 0) cache_store(id, hq, out);
+    return rc;
+}
+
 // Download + decode only (no GPU work). Runs on the worker
 // thread; the main thread uploads via thumb_job_commit.
 static int fetch_decode(int bank, const char *video_id,
@@ -338,11 +396,11 @@ static int fetch_decode(int bank, const char *video_id,
     memset(&mb, 0, sizeof(mb));
     // The now-playing bank wants the larger hqdefault image; fall
     // back to mqdefault when a video has no usable hq image.
-    int dl = download_jpeg(video_id, bank == THUMB_BANK_NP, &mb);
+    int dl = fetch_jpeg(video_id, bank == THUMB_BANK_NP, &mb);
     if (dl != 0 && bank == THUMB_BANK_NP) {
         free(mb.data);
         memset(&mb, 0, sizeof(mb));
-        dl = download_jpeg(video_id, 0, &mb);
+        dl = fetch_jpeg(video_id, 0, &mb);
     }
     int rc = -1;
     if (dl == 0 &&
