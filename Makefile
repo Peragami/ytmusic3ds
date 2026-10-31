@@ -31,8 +31,8 @@ include $(DEVKITARM)/3ds_rules
 #     - icon.png
 #     - <libctru folder>/default_icon.png
 #---------------------------------------------------------------------------------
-TARGET		:=	ytmusic3ds-v3.29
-APP_TITLE	:=	ytmusic3ds v3.29
+TARGET		:=	ytmusic3ds-v3.30
+APP_TITLE	:=	ytmusic3ds v3.30
 APP_DESCRIPTION	:=	YouTube Music-style audio client for Old 3DS (prototype v3.19)
 APP_AUTHOR	:=	muze
 BUILD		:=	build

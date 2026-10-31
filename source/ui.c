@@ -213,7 +213,7 @@ static void draw_list_scene(void) {
             txt(66, y + 18, 0.4f, COL_DIM, s);
         }
         if (fav_find(act_at(i)->id) >= 0)
-            draw_icon(ICON_BOOKMARK, 374, y + 6, 18, COL_ACCENT);
+            draw_icon(ICON_BOOKMARK, 374, y + 6, 18, COL_WHITE);
     }
     if (act_count() > ROWS_VISIBLE) {
         char pg[32];

@@ -1,4 +1,9 @@
-// ytmusic3ds v3.29 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.30 - YouTube Music style client for (Old) 3DS.
+//
+// v3.30 changes over v3.29 (user request, 2026-10-31):
+//   - The favourite bookmark shown at the right of a list
+//     row is white instead of red (user: the red mark in
+//     favourites should be white).
 //
 // v3.29 changes over v3.28 (user report, 2026-10-31):
 //   - Selecting a song no longer freezes the app for ~1 s:
