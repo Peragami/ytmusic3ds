@@ -1,0 +1,6 @@
+*.3dsx
+!dist/*.3dsx
+build/
+*.elf
+*.zip
+update.tmp
