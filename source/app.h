@@ -20,11 +20,12 @@
 #include "thumb.h"  // THUMB_MAX_*
 
 // ---------- paths ----------
-#define APP_VER "3.23"
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.23"
+#define APP_VER "3.24"
+#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.24"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
+#define LIKE_PATH APP_DIR "/likes.txt"
 // Previous versions' folders: favourites and config are
 // imported from the newest one that has them (store.c tries
 // each in order).

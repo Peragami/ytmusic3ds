@@ -1,4 +1,14 @@
-// ytmusic3ds v3.23 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.24 - YouTube Music style client for (Old) 3DS.
+//
+// v3.24 changes over v3.23 (user request, 2026-10-31): the
+//   player pills now match the real app, compared against the
+//   user's screenshot: Like and Bad share one pill split by a
+//   divider; the Lyrics pill uses the real app's quote-mark
+//   glyph (hand-drawn, ICON_LYRICS) and carries its label
+//   again; a Save pill (ICON_PLAYLIST_ADD / _CHECK) joins the
+//   row. Like is independent from the Library now (likes.txt);
+//   Save is the favourite toggle. New icons are appended, the
+//   existing masks are unchanged.
 //
 // v3.23 changes over v3.22 (user request, 2026-10-31):
 //   - Bad button gets the same treatment as Like: white
@@ -152,8 +162,9 @@
 //     L/R = prev/next). Pause is real (ndsp channel pause).
 //   - Y toggles between the player screen and the list screens,
 //     during playback and while idle.
-//   - Like = favourite (same store as the Library tab). Bad =
-//     records the song in dislikes.txt and skips to the next song.
+//   - Like = likes.txt only (v3.24 split it from the Library;
+//     the Save pill / X key manage favourites). Bad = records
+//     the song in dislikes.txt and skips to the next song.
 //   - Lyrics come from the free LRCLIB API (best effort) and are
 //     shown on the top screen, scrollable with the D-pad.
 //   - Queue behaviour: when a song finishes, playback advances to
@@ -262,6 +273,9 @@ static void thumb_poll(void);
 static void hook_player_touch(play_ctl_t *ctl, int px, int py) {
     switch (player_zone(px, py)) {
     case 1:
+        like_toggle(g_np_song.id);
+        break;
+    case 9:
         fav_toggle(&g_np_song);
         break;
     case 2:
@@ -787,10 +801,16 @@ static void play_from_player_view(int which) {
 static void idle_player_touch(int px, int py) {
     switch (player_zone(px, py)) {
     case 1: {
+        int rc = like_toggle(g_np_song.id);
+        snprintf(g_status, sizeof(g_status),
+                 rc == 1 ? "グッドしました" : "グッドを取り消しました");
+        break;
+    }
+    case 9: {
         int rc = fav_toggle(&g_np_song);
         snprintf(g_status, sizeof(g_status),
-                 rc == 1 ? "お気に入りに追加しました"
-                 : rc == 0 ? "お気に入りから外しました"
+                 rc == 1 ? "ライブラリに保存しました"
+                 : rc == 0 ? "保存を取り消しました"
                            : "お気に入りがいっぱいです");
         break;
     }

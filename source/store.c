@@ -44,7 +44,7 @@ void favs_save(void) {
 // of these actually has the file (v3.20: the old single-folder
 // fallback could resurrect stale data after several OTA hops).
 static const char *legacy_dirs[] = {
-    "ytmusic3ds-v3.22", "ytmusic3ds-v3.21", "ytmusic3ds-v3.20", "ytmusic3ds-v3.19", "ytmusic3ds-v3.18", "ytmusic3ds-v3.17",
+    "ytmusic3ds-v3.23", "ytmusic3ds-v3.22", "ytmusic3ds-v3.21", "ytmusic3ds-v3.20", "ytmusic3ds-v3.19", "ytmusic3ds-v3.18", "ytmusic3ds-v3.17",
     "ytmusic3ds-v3.16", "ytmusic3ds-v3.15", "ytmusic3ds-v3.14",
     "ytmusic3ds-v3.13", "ytmusic3ds-v3.12", "ytmusic3ds-v3.11",
 };
@@ -178,6 +178,57 @@ void dislike_add(const char *id) {
     if (!f) return;
     fprintf(f, "%s\n", id);
     fclose(f);
+}
+
+// ---------- likes (Like button, v3.24) ----------
+// Like the real app, Like is now independent from the Library:
+// the Save pill (or the X key) manages favourites, the thumb
+// only records the like in likes.txt.
+int like_has(const char *id) {
+    FILE *f = fopen(LIKE_PATH, "r");
+    if (!f) return 0;
+    char line[32];
+    int found = 0;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strcmp(line, id) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+// Returns 1 when the song is liked after the call, 0 when not.
+int like_toggle(const char *id) {
+    static char ids[512][16];
+    int n = 0, found = -1;
+    FILE *f = fopen(LIKE_PATH, "r");
+    if (f) {
+        char line[32];
+        while (n < 512 && fgets(line, sizeof(line), f)) {
+            line[strcspn(line, "\r\n")] = '\0';
+            if (!line[0]) continue;
+            if (strcmp(line, id) == 0) found = n;
+            snprintf(ids[n], sizeof(ids[n]), "%s", line);
+            n++;
+        }
+        fclose(f);
+    }
+    if (found >= 0) {
+        f = fopen(LIKE_PATH, "w");
+        if (!f) return 1;
+        for (int i = 0; i < n; i++)
+            if (i != found) fprintf(f, "%s\n", ids[i]);
+        fclose(f);
+        return 0;
+    }
+    f = fopen(LIKE_PATH, "a");
+    if (!f) return 0;
+    fprintf(f, "%s\n", id);
+    fclose(f);
+    return 1;
 }
 
 // ---------- active list (results or favourites) ----------

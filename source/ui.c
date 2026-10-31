@@ -296,14 +296,16 @@ static void fmt_count(char *out, size_t cap, long n) {
 
 // Touch zones on the player screen's bottom half. Layout constants
 // are shared by the drawing code and the hit tests:
-//   pills row y 54..90:  like x<116, bad x<172, lyrics x<232
+//   pills row y 54..90 (v3.24 real-app layout): combined
+//   like|bad pill like x<124, bad x<168; lyrics pill x<246;
+//   save pill is zone 9
 //   controls y 138..202: five 64px zones (shuffle/prev/play/next/repeat)
 int player_zone(int px, int py) {
     if (py >= 54 && py < 90) {
-        if (px < 116) return 1; // like
-        if (px < 172) return 2; // bad
-        if (px < 232) return 3; // lyrics
-        return 0;
+        if (px < 124) return 1; // like
+        if (px < 168) return 2; // bad
+        if (px < 246) return 3; // lyrics
+        return 9;               // save
     }
     if (py >= 138 && py < 202) return 4 + (px / 64); // 4..8
     return 0;
@@ -376,30 +378,37 @@ static void draw_bottom_player(void) {
         utf8_truncate(g_np_song.sub, s, sizeof(s), 62);
         txt(8, 31, 0.48f, COL_DIM, s);
     }
-    // Pills: like (icon + count) / bad (icon only) / lyrics
-    // (icon only; v3.16 user request - no text labels, and the
-    // lyrics glyph is a text-lines icon, not the old mic).
-    int liked = fav_find(g_np_song.id) >= 0;
-    draw_pill(8, 56, 104, 26, COL_CHIP);
-    // Like the real app (v3.22, user request): the like thumb is
-    // a white OUTLINE when not liked and fills WHITE when liked -
-    // it never turns red.
+    // Pills (v3.24, user request - match the real app): Like
+    // and Bad share ONE pill split by a divider, the Lyrics
+    // pill carries the real app's quote-mark glyph and its
+    // label again, and a Save pill sits on the right. Like is
+    // independent from the Library now (likes.txt); Save is
+    // the favourite toggle, same as the X key.
+    int liked = like_has(g_np_song.id);
+    draw_pill(6, 56, 160, 26, COL_CHIP);
+    // White OUTLINE when not liked, filled WHITE when liked
+    // (v3.22, user request) - it never turns red.
     draw_icon(liked ? ICON_THUMB_UP : ICON_THUMB_UP_OFF,
-              18, 60, 18, COL_WHITE);
+              16, 60, 18, COL_WHITE);
     if (g_np_likes >= 0) {
         char lc[24];
         fmt_count(lc, sizeof(lc), g_np_likes);
-        txt(42, 61, 0.5f, COL_WHITE, lc);
+        txt(40, 61, 0.5f, COL_WHITE, lc);
     }
-    draw_pill(120, 56, 48, 26, COL_CHIP);
-    // Same treatment as Like (v3.23, user request): white
-    // outline when not disliked, filled white when disliked.
+    C2D_DrawRectSolid(124, 62, 0.42f, 1.5f, 14, COL_DIM);
+    // Bad: same treatment (v3.23) - outline / filled white.
     draw_icon(dislike_has(g_np_song.id) ? ICON_THUMB_DOWN
                                         : ICON_THUMB_DOWN_OFF,
-              135, 60, 18, COL_WHITE);
-    draw_pill(176, 56, 48, 26, COL_CHIP);
-    draw_icon(ICON_SUBJECT, 191, 60, 18,
+              136, 60, 18, COL_WHITE);
+    draw_pill(172, 56, 72, 26, COL_CHIP);
+    draw_icon(ICON_LYRICS, 180, 60, 18,
               g_lyrics_view ? COL_ACCENT : COL_WHITE);
+    txt(204, 61, 0.5f, COL_WHITE, "歌詞");
+    int saved = fav_find(g_np_song.id) >= 0;
+    draw_pill(250, 56, 66, 26, COL_CHIP);
+    draw_icon(saved ? ICON_PLAYLIST_ADD_CHECK : ICON_PLAYLIST_ADD,
+              257, 60, 18, COL_WHITE);
+    txt(281, 61, 0.5f, COL_WHITE, "保存");
     // Message line. The routine "Playing" status is not shown
     // (v3.16 user request); real messages still are.
     const char *msg = g_playback_view ? ctl->message : g_status;
