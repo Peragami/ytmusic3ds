@@ -381,8 +381,11 @@ static void draw_bottom_player(void) {
     // lyrics glyph is a text-lines icon, not the old mic).
     int liked = fav_find(g_np_song.id) >= 0;
     draw_pill(8, 56, 104, 26, COL_CHIP);
-    draw_icon(ICON_THUMB_UP, 18, 60, 18,
-              liked ? COL_ACCENT : COL_WHITE);
+    // Like the real app (v3.22, user request): the like thumb is
+    // a white OUTLINE when not liked and fills WHITE when liked -
+    // it never turns red.
+    draw_icon(liked ? ICON_THUMB_UP : ICON_THUMB_UP_OFF,
+              18, 60, 18, COL_WHITE);
     if (g_np_likes >= 0) {
         char lc[24];
         fmt_count(lc, sizeof(lc), g_np_likes);

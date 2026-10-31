@@ -1,4 +1,10 @@
-// ytmusic3ds v3.21 - YouTube Music style client for (Old) 3DS.
+// ytmusic3ds v3.22 - YouTube Music style client for (Old) 3DS.
+//
+// v3.22 changes over v3.21 (user request, 2026-10-31):
+//   - Like button now matches the real app: a white outline
+//     thumb when not liked, filled white when liked - never
+//     red. Adds ICON_THUMB_UP_OFF (classic outline glyph paired
+//     with the existing filled thumb_up) to the icon set.
 //
 // v3.21 changes over v3.20 (user report, 2026-10-31):
 //   - Tab bar labels are now centred on their tabs by measured
