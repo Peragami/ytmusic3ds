@@ -1,12 +1,21 @@
 // player.c - see player.h.
 //
-// Pipeline: curl (whole stream into RAM, capped) -> webm.c demux ->
+// Pipeline: curl (stream into RAM, capped) -> webm.c demux ->
 // libopus decode -> ndsp wave-buffer queue (channel 0, 48 kHz stereo
 // PCM16). Sized for the Old 3DS: the preferred stream is ~80 kbps Opus
 // (about 0.6 MB per minute), downloads are capped at 32 MB, and the ndsp
 // queue holds 4 x 8192-frame buffers (~0.7 s of audio, 128 KB of linear
-// memory). Decoding is single-threaded; the UI hook runs between buffer
-// fills, which is also where stop input is polled.
+// memory).
+//
+// v3.42 streaming: the download runs on a producer thread with the
+// exact same ranged downloader as before. As soon as the total size
+// is known, the buffer is switched to a fixed allocation of that
+// size and "published"; the main thread then demuxes/decodes from
+// the growing readable window (webm live mode) while the producer
+// keeps filling it. When the server never reveals a total, nothing
+// is published and playback simply starts after the full download,
+// as before. Decoding stays on the main thread; the UI hook runs
+// between buffer fills, which is also where stop input is polled.
 
 #include "player.h"
 
@@ -41,12 +50,21 @@ typedef struct {
     long cur_code;   // last HTTP status line seen
     int accept_body; // current response is 200/206 -> keep its bytes
     long range_total; // total size from Content-Range, -1 = unknown
+    // Streaming state (v3.42): filled by the producer thread,
+    // read by the decoding main thread.
+    volatile int abort;            // main thread asks the producer
+                                   // to stop (not a user stop)
+    int stream_mode;               // download runs as a producer
+    volatile int stream_published; // buffer switched to fixed size
+    volatile size_t stream_avail;  // bytes valid in data so far
+    volatile int stream_done;      // producer thread finished
+    volatile int stream_result;    // download_media() return code
 } dl_ctx_t;
 
 static size_t dl_write(void *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total = size * nmemb;
     dl_ctx_t *ctx = (dl_ctx_t *)userdata;
-    if (ctx->ctl->stop_requested) return 0;
+    if (ctx->ctl->stop_requested || ctx->abort) return 0;
     // In ranged mode, error responses (403 pages etc.) must not pollute
     // the resume buffer: silently swallow their bodies.
     if (ctx->ranged && !ctx->accept_body) return total;
@@ -55,6 +73,13 @@ static size_t dl_write(void *ptr, size_t size, size_t nmemb, void *userdata) {
         return 0;
     }
     if (ctx->len + total > ctx->cap) {
+        // Once published (v3.42), the buffer address is shared
+        // with the decoder and must never move; a server sending
+        // more than its own Content-Range total aborts instead.
+        if (ctx->stream_published) {
+            ctx->overflow = 1;
+            return 0;
+        }
         size_t new_cap = (ctx->len + total) * 2;
         if (new_cap < 1u << 20) new_cap = 1u << 20;
         uint8_t *nb = realloc(ctx->data, new_cap);
@@ -68,6 +93,7 @@ static size_t dl_write(void *ptr, size_t size, size_t nmemb, void *userdata) {
     memcpy(ctx->data + ctx->len, ptr, total);
     ctx->len += total;
     ctx->ctl->dl_bytes = ctx->len;
+    if (ctx->stream_mode) ctx->stream_avail = ctx->len;
     // The ranged path has no xferinfo callback; drive the UI hook here.
     // v3.38: every 16 KB (was 64 KB) - on slow links the hook's
     // input scans were sparse enough that short Y/B taps fell
@@ -180,7 +206,7 @@ static int download_media(const char *url0, int rr_kind,
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 
     while (1) {
-        if (ctx->ctl->stop_requested) {
+        if (ctx->ctl->stop_requested || ctx->abort) {
             ret = 1;
             break;
         }
@@ -211,7 +237,7 @@ static int download_media(const char *url0, int rr_kind,
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
         if (code == 0) code = ctx->cur_code;
 
-        if (ctx->ctl->stop_requested) {
+        if (ctx->ctl->stop_requested || ctx->abort) {
             ret = 1;
             break;
         }
@@ -228,6 +254,24 @@ static int download_media(const char *url0, int rr_kind,
             ctx->ctl->dl_total = (size_t)total;
         }
         size_t got = ctx->len - before;
+        // v3.42: with the total known, switch to a fixed buffer
+        // of exactly that size and publish it, so the decoder can
+        // start on the prefix while this download continues. If
+        // the allocation fails we simply never publish and the
+        // caller falls back to play-after-full-download.
+        if (ctx->stream_mode && !ctx->stream_published &&
+            res == CURLE_OK && got > 0 && total > 0 &&
+            total <= (long)DL_LIMIT) {
+            uint8_t *nb = (uint8_t *)malloc((size_t)total);
+            if (nb) {
+                memcpy(nb, ctx->data, ctx->len);
+                free(ctx->data);
+                ctx->data = nb;
+                ctx->cap = (size_t)total;
+                __sync_synchronize();
+                ctx->stream_published = 1;
+            }
+        }
         if (res == CURLE_OK && code == 206 && got > 0) {
             // Adopt the post-redirect URL (FourthTube does the same);
             // later chunks then skip the redirect hop entirely.
@@ -291,6 +335,31 @@ static int download_media(const char *url0, int rr_kind,
     return ret;
 }
 
+// ---------- streaming producer (v3.42) ----------
+// download_media() on its own thread. The context's hook stays
+// NULL in stream mode: the producer must never render (GPU work
+// is main-thread only); the main thread pumps the UI hook itself
+// while waiting for data. Stop requests still reach the producer
+// through ctl->stop_requested, which dl_write polls per chunk of
+// incoming body.
+
+typedef struct {
+    const char *url;
+    int rr_kind;
+    const char *video_id;
+    int instance_idx;
+    dl_ctx_t *dl;
+} producer_args_t;
+
+static void producer_main(void *arg) {
+    producer_args_t *a = (producer_args_t *)arg;
+    int r = download_media(a->url, a->rr_kind, a->video_id,
+                           a->instance_idx, a->dl);
+    a->dl->stream_result = r;
+    __sync_synchronize();
+    a->dl->stream_done = 1;
+}
+
 // ---------- decode + ndsp ----------
 
 typedef struct {
@@ -298,6 +367,8 @@ typedef struct {
     OpusDecoder *dec;
     int src_channels;
     int eos;              // no more packets
+    dl_ctx_t *dl;         // v3.42: live download feeding webm, or NULL
+    int starved;          // v3.42: last fetch outran the live window
     uint32_t skip;        // pre-skip samples still to discard
     uint64_t frames_out;  // frames handed to ndsp (for elapsed time)
     // Carry-over of decoded samples that did not fit the previous buffer.
@@ -316,13 +387,26 @@ typedef struct {
 // Returns the number of frames written (0 only at end of stream).
 static size_t decode_fill(decode_ctx_t *dc, int16_t *dst, size_t max_frames) {
     size_t written = 0;
+    dc->starved = 0; // reflects this call's outcome only (v3.42)
     while (written < max_frames) {
         if (dc->pending_off >= dc->pending_len) {
             if (dc->eos) break;
             const uint8_t *pkt;
             size_t plen;
             int64_t ts;
+            if (dc->dl) {
+                // Grow the demuxer's readable window to whatever
+                // the producer has delivered so far. Once the
+                // producer is done (successfully or not), the
+                // window is final and starvation turns into EOF.
+                webm_update(&dc->webm, dc->dl->stream_avail,
+                            dc->dl->stream_done);
+            }
             int r = webm_next_packet(&dc->webm, &pkt, &plen, &ts);
+            if (r == 2) { // starved: bytes still in flight
+                dc->starved = 1;
+                break;
+            }
             if (r <= 0) { // 0 = EOF, <0 = corrupt region: stop cleanly
                 dc->eos = 1;
                 break;
@@ -372,46 +456,144 @@ static int play_common(const char *url, unsigned total_sec_hint,
     ctl->fail_offset = 0;
     snprintf(ctl->message, sizeof(ctl->message), "Downloading stream...");
 
-    dl_ctx_t dl;
-    memset(&dl, 0, sizeof(dl));
-    dl.ctl = ctl;
-    dl.hook = hook;
-    dl.user = user;
-    dl.ranged = 1;
-    int dr = download_media(url, rr_kind, video_id, instance_idx, &dl);
-    if (dr == 1) {
-        free(dl.data);
-        return 1;
+    // v3.42: the context is heap-allocated and shared with the
+    // producer thread. The producer's hook stays NULL (it must
+    // never render); the main thread pumps the UI hook itself in
+    // every wait below.
+    dl_ctx_t *dl = (dl_ctx_t *)calloc(1, sizeof(dl_ctx_t));
+    if (!dl) {
+        snprintf(ctl->message, sizeof(ctl->message), "Out of memory.");
+        return -1;
     }
-    if (dr != 0) {
-        if (dr == -2) {
-            snprintf(ctl->message, sizeof(ctl->message),
-                     "Stream too large (>32 MB).");
-            free(dl.data);
-            return -1;
+    dl->ctl = ctl;
+    dl->user = user;
+    dl->ranged = 1;
+    dl->stream_mode = 1;
+
+    producer_args_t pargs;
+    pargs.url = url;
+    pargs.rr_kind = rr_kind;
+    pargs.video_id = video_id;
+    pargs.instance_idx = instance_idx;
+    pargs.dl = dl;
+    Thread producer = threadCreate(producer_main, &pargs, 256 * 1024,
+                                   0x3F, -2, false);
+    int have_producer = producer != NULL;
+    if (!have_producer) {
+        // No thread available: synchronous download, exactly the
+        // pre-v3.42 behaviour.
+        dl->stream_mode = 0;
+        dl->hook = hook;
+        dl->stream_result = download_media(url, rr_kind, video_id,
+                                           instance_idx, dl);
+        dl->stream_done = 1;
+    }
+
+    // Wait for the stream to be published (fixed buffer with a
+    // known total) or for the download to finish outright.
+    while (have_producer && !dl->stream_published && !dl->stream_done) {
+        if (ctl->stop_requested) break;
+        if (hook) hook(user);
+        svcSleepThread(10000000); // 10 ms
+    }
+    if (ctl->stop_requested) {
+        // dl_write sees the stop and aborts the producer.
+        if (have_producer) {
+            threadJoin(producer, U64_MAX);
+            threadFree(producer);
         }
-        snprintf(ctl->message, sizeof(ctl->message),
-                 rr_kind == RR_DIRECT
-                     ? "Direct download failed (stream kept cutting "
-                       "out)."
-                 : rr_kind == RR_INVIDIOUS
-                     ? "Invidious download failed (stream kept cutting "
-                       "out)."
-                     : "Download failed (network/HTTP).");
-        free(dl.data);
-        // Let the caller fall back to another route/instance when the
-        // download stage is what failed.
-        return rr_kind != RR_NONE ? PLAY_DL_FAIL : -1;
+        free(dl->data);
+        free(dl);
+        return 1;
     }
 
     webm_t webm;
-    int wr = webm_open(&webm, dl.data, dl.len);
-    if (wr != 0) {
-        ctl->fail_stage = FAILSTAGE_MEDIA;
-        snprintf(ctl->message, sizeof(ctl->message),
-                 "Not a WebM/Opus stream (open rc=%d).", wr);
-        free(dl.data);
-        return -1;
+    int streaming = 0;
+    if (dl->stream_published) {
+        // Open the demuxer on the live window, waiting for the
+        // header bytes to arrive.
+        int wr = 1;
+        while (wr == 1) {
+            int fin = dl->stream_done && dl->stream_result == 0;
+            wr = webm_open_live(&webm, dl->data, dl->stream_avail, fin);
+            if (wr != 1) break;
+            if (dl->stream_done) break; // no more bytes will come
+            if (ctl->stop_requested) break;
+            if (hook) hook(user);
+            svcSleepThread(10000000); // 10 ms
+        }
+        if (ctl->stop_requested) {
+            if (have_producer) {
+                threadJoin(producer, U64_MAX);
+                threadFree(producer);
+            }
+            free(dl->data);
+            free(dl);
+            return 1;
+        }
+        if (wr == 0) {
+            streaming = 1;
+        } else if (!(dl->stream_done && dl->stream_result != 0)) {
+            // Definitive media error (or a dead stream whose
+            // download also failed is handled below instead).
+            ctl->fail_stage = FAILSTAGE_MEDIA;
+            snprintf(ctl->message, sizeof(ctl->message),
+                     "Not a WebM/Opus stream (open rc=%d).", wr);
+            if (have_producer) {
+                dl->abort = 1;
+                threadJoin(producer, U64_MAX);
+                threadFree(producer);
+            }
+            free(dl->data);
+            free(dl);
+            return -1;
+        }
+        // else: published, but the producer died before a playable
+        // header arrived -> download failure handling below.
+    }
+    if (!streaming) {
+        if (have_producer) {
+            threadJoin(producer, U64_MAX);
+            threadFree(producer);
+            have_producer = 0;
+        }
+        int dr = dl->stream_result;
+        if (dr == 1) {
+            free(dl->data);
+            free(dl);
+            return 1;
+        }
+        if (dr != 0) {
+            if (dr == -2) {
+                snprintf(ctl->message, sizeof(ctl->message),
+                         "Stream too large (>32 MB).");
+                free(dl->data);
+                free(dl);
+                return -1;
+            }
+            snprintf(ctl->message, sizeof(ctl->message),
+                     rr_kind == RR_DIRECT
+                         ? "Direct download failed (stream kept cutting "
+                           "out)."
+                     : rr_kind == RR_INVIDIOUS
+                         ? "Invidious download failed (stream kept "
+                           "cutting out)."
+                         : "Download failed (network/HTTP).");
+            free(dl->data);
+            free(dl);
+            // Let the caller fall back to another route/instance
+            // when the download stage is what failed.
+            return rr_kind != RR_NONE ? PLAY_DL_FAIL : -1;
+        }
+        int wr = webm_open(&webm, dl->data, dl->len);
+        if (wr != 0) {
+            ctl->fail_stage = FAILSTAGE_MEDIA;
+            snprintf(ctl->message, sizeof(ctl->message),
+                     "Not a WebM/Opus stream (open rc=%d).", wr);
+            free(dl->data);
+            free(dl);
+            return -1;
+        }
     }
 
     int oerr = 0;
@@ -420,7 +602,13 @@ static int play_common(const char *url, unsigned total_sec_hint,
         ctl->fail_stage = FAILSTAGE_MEDIA;
         snprintf(ctl->message, sizeof(ctl->message),
                  "opus_decoder_create failed (%d).", oerr);
-        free(dl.data);
+        if (have_producer) {
+            dl->abort = 1;
+            threadJoin(producer, U64_MAX);
+            threadFree(producer);
+        }
+        free(dl->data);
+        free(dl);
         return -1;
     }
 
@@ -430,7 +618,13 @@ static int play_common(const char *url, unsigned total_sec_hint,
                  "ndspInit failed - DSP firmware dump is required "
                  "(run DSP1 once from Homebrew Launcher).");
         opus_decoder_destroy(dec);
-        free(dl.data);
+        if (have_producer) {
+            dl->abort = 1;
+            threadJoin(producer, U64_MAX);
+            threadFree(producer);
+        }
+        free(dl->data);
+        free(dl);
         return -1;
     }
     ndspSetOutputMode(NDSP_OUTPUT_STEREO);
@@ -467,12 +661,14 @@ static int play_common(const char *url, unsigned total_sec_hint,
         dc->dec = dec;
         dc->src_channels = webm.channels;
         dc->skip = webm.pre_skip;
+        dc->dl = streaming ? dl : NULL;
 
         ctl->phase = PHASE_PLAY;
         snprintf(ctl->message, sizeof(ctl->message), "Playing");
         ctl->paused = 0;
         ret = 0;
         int stream_done = 0;
+        int buffering = 0;
         while (1) {
             if (ctl->stop_requested) {
                 ret = 1;
@@ -516,6 +712,22 @@ static int play_common(const char *url, unsigned total_sec_hint,
                         ndspChnWaveBufAdd(0, &bufs[i]);
                         any_active = 1;
                         filled = 1;
+                        if (buffering) {
+                            buffering = 0;
+                            snprintf(ctl->message,
+                                     sizeof(ctl->message), "Playing");
+                        }
+                    } else if (dc->starved && !dl->stream_done) {
+                        // v3.42: the decoder outran the download.
+                        // The queued buffers keep playing (~0.7 s
+                        // of headroom); wait for the producer.
+                        dc->starved = 0;
+                        if (!buffering) {
+                            buffering = 1;
+                            snprintf(ctl->message,
+                                     sizeof(ctl->message),
+                                     "Buffering...");
+                        }
                     } else {
                         stream_done = 1;
                     }
@@ -525,6 +737,13 @@ static int play_common(const char *url, unsigned total_sec_hint,
             if (hook) hook(user);
             if (stream_done && !any_active) break;
             if (!filled) svcSleepThread(5000000); // 5 ms
+        }
+        if (streaming && ret == 0 && dl->stream_done &&
+            dl->stream_result != 0) {
+            // The download died mid-song; the demuxer treated the
+            // truncation as the end of the stream.
+            snprintf(ctl->message, sizeof(ctl->message),
+                     "Stream cut (download failed) - ended early.");
         }
         ndspChnSetPaused(0, false);
         ctl->paused = 0;
@@ -536,7 +755,16 @@ static int play_common(const char *url, unsigned total_sec_hint,
         if (bufs[i].data_pcm16) linearFree(bufs[i].data_pcm16);
     ndspExit();
     opus_decoder_destroy(dec);
-    free(dl.data);
+    if (have_producer) {
+        // Playback is over; the producer is at most finishing the
+        // tail of the file. Abort it if it still has far to go so
+        // cleanup never waits on the network.
+        if (!dl->stream_done) dl->abort = 1;
+        threadJoin(producer, U64_MAX);
+        threadFree(producer);
+    }
+    free(dl->data);
+    free(dl);
     ctl->phase = PHASE_DONE;
     return ret;
 }

@@ -54,6 +54,10 @@ typedef void (*play_hook_t)(void *user);
 
 // Download the stream at url into RAM, demux it as WebM, decode Opus and
 // play through ndsp channel 0.
+// v3.42: the download runs on a producer thread and playback starts
+// as soon as the headers and the first bytes are in (streaming),
+// once the server reveals the total size; when it never does,
+// playback starts after the full download as before.
 // Returns 0 = played to the end, 1 = stopped by user, -1 = error
 // (ctl->message describes it).
 int play_stream_url(const char *url, unsigned total_sec_hint,

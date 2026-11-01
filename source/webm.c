@@ -83,6 +83,17 @@ static int read_vint_raw(const uint8_t *d, size_t len, uint64_t *out,
     return n;
 }
 
+// End offset of an element body: parent_end for unknown-size
+// elements, body + sz otherwise, overflow-safe (v3.42: with a
+// live window the declared sizes can legitimately point far past
+// the bytes downloaded so far, and a corrupt size must not wrap).
+static size_t elem_end(size_t body, uint64_t sz, int unk,
+                       size_t parent_end) {
+    if (unk) return parent_end;
+    if (sz > (uint64_t)(SIZE_MAX - body)) return SIZE_MAX;
+    return body + (size_t)sz;
+}
+
 // ---------- header parsing ----------
 
 // Parse the children of a Tracks element; record the first A_OPUS track.
@@ -175,47 +186,68 @@ static void parse_info(webm_t *w, size_t start, size_t end) {
     }
 }
 
-int webm_open(webm_t *w, const uint8_t *data, size_t len) {
+// final != 0: the buffer is complete (avail == its full length)
+// and failures are real errors, exactly the pre-v3.42 behaviour.
+// final == 0 (streaming): only avail bytes are readable; running
+// out of them returns 1 ("need more data") instead of an error.
+static int webm_open_impl(webm_t *w, const uint8_t *data, size_t avail,
+                          int final) {
     memset(w, 0, sizeof(*w));
     w->data = data;
-    w->len = len;
+    w->len = avail;
+    w->avail = avail;
+    w->final = final;
     w->timestamp_scale = 1000000;
     w->track_number = -1;
     w->channels = 2;
 
     size_t p = 0;
-    uint32_t id = read_id(data, len, &p);
-    if (id != ID_EBML) return -1;
+    uint32_t id = read_id(data, avail, &p);
+    if (id != ID_EBML) {
+        // With fewer than 4 bytes we cannot tell yet.
+        if (!final && avail < 4) return 1;
+        return -1;
+    }
     uint64_t sz;
     int unk;
-    if (!read_size(data, len, &p, &sz, &unk)) return -1;
+    if (!read_size(data, avail, &p, &sz, &unk))
+        return final ? -1 : 1;
     p += (size_t)sz; // skip EBML header body
-    if (p >= len) return -1;
+    if (p >= avail) return final ? -1 : 1;
 
-    id = read_id(data, len, &p);
-    if (id != ID_SEGMENT) return -1;
-    if (!read_size(data, len, &p, &sz, &unk)) return -1;
+    id = read_id(data, avail, &p);
+    if (id != ID_SEGMENT) return final ? -1 : 1;
+    if (!read_size(data, avail, &p, &sz, &unk))
+        return final ? -1 : 1;
     w->pos = p;
-    w->seg_end = unk ? len : p + (size_t)sz;
-    if (w->seg_end > len) w->seg_end = len;
+    w->seg_end = unk ? (final ? avail : SIZE_MAX)
+                     : elem_end(p, sz, 0, 0);
+    if (final && w->seg_end > avail) w->seg_end = avail;
 
     // Walk segment-level elements until the first Cluster, collecting
     // Info/Tracks on the way.
     while (w->pos < w->seg_end) {
+        if (w->pos >= avail) return final ? -1 : 1;
         size_t save = w->pos;
         size_t hdr = w->pos;
-        uint32_t eid = read_id(data, w->seg_end, &w->pos);
+        uint32_t eid = read_id(data, avail, &w->pos);
         uint64_t esz;
         int eunk;
-        if (!eid || !read_size(data, w->seg_end, &w->pos, &esz, &eunk)) return -1;
+        if (!eid || !read_size(data, avail, &w->pos, &esz, &eunk))
+            return final ? -1 : 1;
         size_t body = w->pos;
-        size_t bend = eunk ? w->seg_end : body + (size_t)esz;
-        if (bend > w->seg_end) bend = w->seg_end;
+        size_t bend = elem_end(body, esz, eunk, w->seg_end);
         if (eid == ID_CLUSTER) {
             // Rewind so webm_next_packet re-reads this cluster header.
             w->pos = hdr;
             break;
-        } else if (eid == ID_INFO) {
+        }
+        if (bend > avail) {
+            if (!final) return 1; // body still in flight
+            bend = avail;
+        }
+        if (bend > w->seg_end) bend = w->seg_end;
+        if (eid == ID_INFO) {
             parse_info(w, body, bend);
         } else if (eid == ID_TRACKS) {
             parse_tracks(w, body, bend);
@@ -225,6 +257,20 @@ int webm_open(webm_t *w, const uint8_t *data, size_t len) {
     }
     if (w->track_number < 0) return -2;
     return 0;
+}
+
+int webm_open(webm_t *w, const uint8_t *data, size_t len) {
+    return webm_open_impl(w, data, len, 1);
+}
+
+int webm_open_live(webm_t *w, const uint8_t *data, size_t avail,
+                   int final) {
+    return webm_open_impl(w, data, avail, final);
+}
+
+void webm_update(webm_t *w, size_t avail, int final) {
+    w->avail = avail;
+    w->final = final;
 }
 
 // ---------- packet iteration ----------
@@ -329,22 +375,39 @@ int webm_next_packet(webm_t *w, const uint8_t **pkt, size_t *pkt_len,
         if (!w->in_cluster) {
             // Find the next Cluster at segment level.
             if (w->pos >= w->seg_end) return 0;
+            if (w->pos >= w->avail) return w->final ? 0 : 2;
             size_t save = w->pos;
-            uint32_t id = read_id(d, w->seg_end, &w->pos);
+            uint32_t id = read_id(d, w->avail, &w->pos);
             uint64_t sz;
             int unk;
-            if (!id || !read_size(d, w->seg_end, &w->pos, &sz, &unk)) return -1;
-            size_t bend = unk ? w->seg_end : w->pos + (size_t)sz;
+            if (!id || !read_size(d, w->avail, &w->pos, &sz, &unk)) {
+                // A header split by the live window edge must be
+                // re-read whole next time: rewind to its start.
+                if (!w->final) w->pos = save;
+                return w->final ? -1 : 2;
+            }
+            size_t bend = elem_end(w->pos, sz, unk, w->seg_end);
             if (bend > w->seg_end) bend = w->seg_end;
             if (id == ID_CLUSTER) {
+                // Enter as soon as the header is readable; the
+                // children are gated individually against avail.
                 w->in_cluster = 1;
                 w->cluster_end = bend;
                 w->cluster_ts = 0;
                 // w->pos already at first cluster child
-            } else {
-                w->pos = bend;
-                if (w->pos <= save) return -1;
+                continue;
             }
+            if (bend > w->avail) {
+                // Element body still in flight: rewind so the
+                // same element is re-read once more bytes land.
+                if (!w->final) {
+                    w->pos = save;
+                    return 2;
+                }
+                bend = w->avail;
+            }
+            w->pos = bend;
+            if (w->pos <= save) return -1;
             continue;
         }
         // Inside a cluster: read the next child element.
@@ -353,14 +416,34 @@ int webm_next_packet(webm_t *w, const uint8_t **pkt, size_t *pkt_len,
             w->pos = w->cluster_end;
             continue;
         }
+        if (w->pos >= w->avail) {
+            if (!w->final) return 2;
+            // Complete buffer but the cluster claims more than
+            // arrived (truncated file): end the stream cleanly.
+            w->in_cluster = 0;
+            w->pos = w->avail;
+            continue;
+        }
         size_t save = w->pos;
-        uint32_t id = read_id(d, w->cluster_end, &w->pos);
+        size_t lim = w->cluster_end < w->avail ? w->cluster_end
+                                               : w->avail;
+        uint32_t id = read_id(d, lim, &w->pos);
         uint64_t sz;
         int unk;
-        if (!id || !read_size(d, w->cluster_end, &w->pos, &sz, &unk)) return -1;
+        if (!id || !read_size(d, lim, &w->pos, &sz, &unk)) {
+            if (!w->final) w->pos = save; // split header: rewind
+            return w->final ? -1 : 2;
+        }
         size_t body = w->pos;
-        size_t bend = unk ? w->cluster_end : body + (size_t)sz;
+        size_t bend = elem_end(body, sz, unk, w->cluster_end);
         if (bend > w->cluster_end) bend = w->cluster_end;
+        if (bend > w->avail) {
+            if (!w->final) {
+                w->pos = save;
+                return 2;
+            }
+            bend = w->avail;
+        }
         if (id == ID_CLUSTERTS) {
             w->cluster_ts = read_uint(d + body, bend - body);
             w->pos = bend;
