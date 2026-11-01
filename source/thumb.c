@@ -19,8 +19,10 @@
 #define MAX_JPEG_BYTES (512 * 1024)
 
 // Per-bank texture edge: list art is 64px from mqdefault; the
-// now-playing bank gets 128px from hqdefault for the big artwork.
-static const int bank_dim[3] = {64, 64, 128};
+// now-playing bank gets 256px from hqdefault for the big
+// artwork (v3.41, user request: at 128px the 224px on-screen
+// jacket was an upscale and looked soft).
+static const int bank_dim[3] = {64, 64, 256};
 static const int bank_cap[3] = {THUMB_MAX_RESULTS, THUMB_MAX_FAVS, 1};
 
 int thumb_dim(int bank) {
@@ -110,9 +112,12 @@ static void jpg_error_exit(j_common_ptr cinfo) {
 }
 
 // Decode a JPEG in memory to an RGB buffer (malloc'd; caller frees).
-// Dimensions are validated before any row is read. Half-scale decode
-// keeps the working buffer small (mqdefault 320x180 -> 160x90).
-static int decode_jpeg_rgb(const uint8_t *data, size_t len,
+// Dimensions are validated before any row is read. List art is
+// decoded at half scale to keep the working buffer small
+// (mqdefault 320x180 -> 160x90); the now-playing artwork is
+// decoded at full scale since v3.41 (hqdefault 480x360) so the
+// 256px texture samples real detail instead of an upscale.
+static int decode_jpeg_rgb(const uint8_t *data, size_t len, int full,
                            uint8_t **rgb_out, int *w_out, int *h_out) {
     struct jpeg_decompress_struct cinfo;
     struct jpg_err_mgr err;
@@ -131,7 +136,7 @@ static int decode_jpeg_rgb(const uint8_t *data, size_t len,
         return -1;
     }
     cinfo.scale_num = 1;
-    cinfo.scale_denom = 2;
+    cinfo.scale_denom = full ? 1 : 2;
     cinfo.out_color_space = JCS_RGB;
     jpeg_start_decompress(&cinfo);
     int w = (int)cinfo.output_width;
@@ -434,7 +439,7 @@ static int fetch_jpeg(const char *id, int hq, membuf_t *out,
 // One fetch+decode attempt at one quality. A cached file
 // that fails to decode (torn by a sudden power loss in an
 // older version, say) is deleted and downloaded fresh once.
-static int fetch_decode_try(const char *video_id, int hq,
+static int fetch_decode_try(const char *video_id, int hq, int full,
                             uint8_t **rgb_out, int *w_out,
                             int *h_out) {
     membuf_t mb;
@@ -442,7 +447,7 @@ static int fetch_decode_try(const char *video_id, int hq,
     int from_cache = 0;
     int rc = -1;
     if (fetch_jpeg(video_id, hq, &mb, &from_cache) == 0) {
-        if (decode_jpeg_rgb(mb.data, mb.len, rgb_out, w_out,
+        if (decode_jpeg_rgb(mb.data, mb.len, full, rgb_out, w_out,
                             h_out) == 0) {
             rc = 0;
         } else if (from_cache) {
@@ -450,7 +455,7 @@ static int fetch_decode_try(const char *video_id, int hq,
             free(mb.data);
             memset(&mb, 0, sizeof(mb));
             if (fetch_jpeg(video_id, hq, &mb, &from_cache) == 0 &&
-                decode_jpeg_rgb(mb.data, mb.len, rgb_out, w_out,
+                decode_jpeg_rgb(mb.data, mb.len, full, rgb_out, w_out,
                                 h_out) == 0)
                 rc = 0;
         }
@@ -465,10 +470,12 @@ static int fetch_decode(int bank, const char *video_id,
                         uint8_t **rgb_out, int *w_out, int *h_out) {
     // The now-playing bank wants the larger hqdefault image; fall
     // back to mqdefault when a video has no usable hq image.
+    // It also decodes at full scale (v3.41); list banks keep the
+    // half-scale decode.
     int hq = bank == THUMB_BANK_NP;
-    int rc = fetch_decode_try(video_id, hq, rgb_out, w_out, h_out);
+    int rc = fetch_decode_try(video_id, hq, hq, rgb_out, w_out, h_out);
     if (rc != 0 && hq)
-        rc = fetch_decode_try(video_id, 0, rgb_out, w_out, h_out);
+        rc = fetch_decode_try(video_id, 0, 1, rgb_out, w_out, h_out);
     return rc;
 }
 

@@ -47,7 +47,8 @@ void thumb_job_discard(void);
 C2D_Image *thumb_get(int bank, int idx);
 
 // Native texture edge length for a bank (results/favourites: 64,
-// now-playing: 128 from the larger hqdefault image). The UI needs
+// now-playing: 256 from the larger hqdefault image, full-scale
+// decode since v3.41). The UI needs
 // it to compute draw scale factors.
 int thumb_dim(int bank);
 // Average colour of the current now-playing jacket (v3.28,
