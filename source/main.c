@@ -343,6 +343,11 @@ int g_tq_favs_dirty = 0; // favourites bank was invalidated
 static void artist_from_sub(const char *sub, char *out, size_t cap);
 static void thumb_poll(void);
 
+// v3.38: tab queued by a tab-bar tap during playback/download
+// (-1 = none; TAB_SEARCH means "open the search keyboard").
+// The idle loop carries it out once playback has stopped.
+int g_pending_tab = -1;
+
 // ---------- playback UI hook ----------
 // Touch actions on the player screen while playing. Zones come
 // from player_zone(); like/bad/lyrics/shuffle/repeat act in place,
@@ -394,15 +399,38 @@ static void ui_hook(void *user) {
     play_ctl_t *ctl = (play_ctl_t *)user;
     hidScanInput();
     u32 k = hidKeysDown();
-    if (k & KEY_B) ctl->stop_requested = 1;
-    if (k & KEY_Y) {
+    // v3.38: B and Y are also read from the held state through
+    // a latch. During downloads this hook runs at data-arrival
+    // pace, and a tap that starts and ends between two scans
+    // never appears in hidKeysDown at all - the user reported
+    // Y (back to the list) feeling dead while downloading.
+    static int y_was_held = 0, b_was_held = 0;
+    u32 held = hidKeysHeld();
+    if ((held & KEY_B) && !b_was_held) ctl->stop_requested = 1;
+    b_was_held = (held & KEY_B) != 0;
+    if ((held & KEY_Y) && !y_was_held) {
         g_player_view = !g_player_view;
         g_last_draw_ms = 0;
     }
+    y_was_held = (held & KEY_Y) != 0;
     if (k & KEY_TOUCH) {
         touchPosition tp;
         hidTouchRead(&tp);
-        if (g_player_view) {
+        if (tp.py >= NAV_TOP) {
+            // v3.38: the tab bar was dead during playback and
+            // downloads. Queue the tapped tab for the idle loop
+            // and stop playback; the tab then opens exactly as
+            // it does when idle (Search opens the keyboard).
+            int t = tp.px / 80;
+            if (t == TAB_SEARCH) {
+                g_pending_tab = TAB_SEARCH;
+                ctl->stop_requested = 1;
+            } else if (t >= 0 && t < 4 && t != list_tab()) {
+                g_pending_tab = t;
+                ctl->stop_requested = 1;
+            }
+            g_last_draw_ms = 0;
+        } else if (g_player_view) {
             hook_player_touch(ctl, tp.px, tp.py);
         } else if (g_has_np && tp.py >= MINI_TOP && tp.py < NAV_TOP) {
             // Mini player: button toggles pause, body opens the
@@ -1159,6 +1187,17 @@ int main(int argc, char **argv) {
 
     int exit_now = 0;
     while (aptMainLoop() && !exit_now) {
+        // v3.38: a tab tapped during playback/download queued
+        // itself and stopped playback; carry it out now.
+        if (g_pending_tab >= 0) {
+            int t = g_pending_tab;
+            g_pending_tab = -1;
+            if (t == TAB_SEARCH)
+                do_search_flow();
+            else
+                switch_tab(t);
+            render();
+        }
         if (g_tq_favs_dirty) {
             g_tq_favs_dirty = 0;
             if (g_tab == TAB_LIBRARY)

@@ -69,8 +69,11 @@ static size_t dl_write(void *ptr, size_t size, size_t nmemb, void *userdata) {
     ctx->len += total;
     ctx->ctl->dl_bytes = ctx->len;
     // The ranged path has no xferinfo callback; drive the UI hook here.
+    // v3.38: every 16 KB (was 64 KB) - on slow links the hook's
+    // input scans were sparse enough that short Y/B taps fell
+    // entirely between scans and looked dead during downloads.
     if (ctx->ranged && ctx->hook &&
-        ctx->len - ctx->last_hook_at >= 64 * 1024) {
+        ctx->len - ctx->last_hook_at >= 16 * 1024) {
         ctx->last_hook_at = ctx->len;
         ctx->hook(ctx->user);
     }
