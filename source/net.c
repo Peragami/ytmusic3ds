@@ -175,6 +175,42 @@ static void extract_column(json_t *item, int idx, char *out, size_t out_size) {
     }
 }
 
+// Concatenate the runs of a {"runs":[...]} text object (v3.35:
+// two-row home tiles carry title/subtitle in this shape instead
+// of flexColumns).
+static void concat_runs(json_t *text, char *out, size_t out_size) {
+    out[0] = '\0';
+    json_t *runs = json_object_get(text, "runs");
+    if (!json_is_array(runs)) return;
+    size_t i;
+    json_t *run;
+    json_array_foreach(runs, i, run) {
+        const char *t = json_string_value(json_object_get(run, "text"));
+        if (t) {
+            size_t room = out_size - strlen(out) - 1;
+            if (room > 0) strncat(out, t, room);
+        }
+    }
+}
+
+static int id_seen(const char *vid) {
+    for (int i = 0; i < g_result_count; i++)
+        if (strcmp(g_results[i].id, vid) == 0) return 1;
+    return 0;
+}
+
+static void result_push(const char *title, const char *sub,
+                        const char *vid) {
+    result_t *r = &g_results[g_result_count];
+    strncpy(r->title, title, TITLE_LEN - 1);
+    r->title[TITLE_LEN - 1] = '\0';
+    strncpy(r->sub, sub, SUB_LEN - 1);
+    r->sub[SUB_LEN - 1] = '\0';
+    strncpy(r->id, vid, VID_LEN - 1);
+    r->id[VID_LEN - 1] = '\0';
+    g_result_count++;
+}
+
 // Recursive walk of the search JSON. Two v3.2 stack fixes live here:
 // the per-level title buffer used to sit in every recursion frame
 // (~200 B x depth); it is a single static scratch buffer now (each
@@ -191,16 +227,40 @@ static void collect(json_t *node, int depth) {
             json_t *pid = json_object_get(item, "playlistItemData");
             const char *vid =
                 json_string_value(json_object_get(pid, "videoId"));
+            if (!vid) {
+                // v3.35: home-feed list items carry the id in the
+                // navigation endpoint instead of playlistItemData.
+                json_t *we = json_object_get(
+                    json_object_get(item, "navigationEndpoint"),
+                    "watchEndpoint");
+                vid = json_string_value(json_object_get(we, "videoId"));
+            }
             static char title[TITLE_LEN];
             extract_column(item, 0, title, sizeof(title));
-            if (vid && title[0]) {
-                result_t *r = &g_results[g_result_count];
-                strncpy(r->title, title, TITLE_LEN - 1);
-                r->title[TITLE_LEN - 1] = '\0';
-                extract_column(item, 1, r->sub, SUB_LEN);
-                strncpy(r->id, vid, VID_LEN - 1);
-                r->id[VID_LEN - 1] = '\0';
-                g_result_count++;
+            if (vid && title[0] && !id_seen(vid)) {
+                static char sub[SUB_LEN];
+                extract_column(item, 1, sub, sizeof(sub));
+                result_push(title, sub, vid);
+            }
+        }
+        // v3.35: home shelves are mostly two-row tiles (carousel
+        // items). Only tiles whose endpoint is a plain watch link
+        // are songs/videos we can play; albums and playlists point
+        // to browse endpoints and are skipped.
+        json_t *tile = json_object_get(node, "musicTwoRowItemRenderer");
+        if (tile) {
+            json_t *we = json_object_get(
+                json_object_get(tile, "navigationEndpoint"),
+                "watchEndpoint");
+            const char *vid =
+                json_string_value(json_object_get(we, "videoId"));
+            static char t2[TITLE_LEN];
+            concat_runs(json_object_get(tile, "title"), t2, sizeof(t2));
+            if (vid && t2[0] && !id_seen(vid)) {
+                static char s2[SUB_LEN];
+                concat_runs(json_object_get(tile, "subtitle"), s2,
+                            sizeof(s2));
+                result_push(t2, s2, vid);
             }
         }
         const char *key;
@@ -285,6 +345,53 @@ int yt_search(const char *query) {
     g_result_count = 0;
     collect(root, 0);
     json_decref(root);
+    return g_result_count > 0 ? 0 : -1;
+}
+
+// ---------- home recommendations (v3.35) ----------
+// Same anonymous WEB_REMIX context as search, against the
+// /browse endpoint. FEmusic_home is the real app's home feed;
+// unauthenticated it carries generic shelves (quick picks,
+// charts, new releases) whose song entries use the same
+// renderers collect() already understands. If it yields no
+// playable songs, FEmusic_charts is tried as a fallback.
+static int yt_browse_collect(const char *browse_id) {
+    char url[256];
+    snprintf(url, sizeof(url),
+             "https://music.youtube.com/youtubei/v1/browse?key=%s"
+             "&prettyPrint=false",
+             API_KEY);
+    char body[512];
+    snprintf(body, sizeof(body),
+             "{\"context\":{\"client\":{\"clientName\":\"WEB_REMIX\","
+             "\"clientVersion\":\"1.20241010.01.00\",\"hl\":\"ja\","
+             "\"gl\":\"JP\"}},\"browseId\":\"%s\"}",
+             browse_id);
+    buf_t buf;
+    long http = 0;
+    if (http_request(url, body, &buf, &http) != 0) return -1;
+    printf("browse %s: HTTP %ld, %u bytes\n", browse_id, http,
+           (unsigned)buf.len);
+    if (http != 200) {
+        free(buf.data);
+        return -1;
+    }
+    json_error_t jerr;
+    json_t *root = json_loads(buf.data, 0, &jerr);
+    free(buf.data);
+    if (!root) {
+        printf("JSON parse error: %s\n", jerr.text);
+        return -1;
+    }
+    collect(root, 0);
+    json_decref(root);
+    return 0;
+}
+
+int yt_home(void) {
+    g_result_count = 0;
+    yt_browse_collect("FEmusic_home");
+    if (g_result_count == 0) yt_browse_collect("FEmusic_charts");
     return g_result_count > 0 ? 0 : -1;
 }
 

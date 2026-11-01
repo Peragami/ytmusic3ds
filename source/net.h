@@ -22,6 +22,11 @@ extern int g_result_count;
 // Fills g_results/g_result_count. Returns 0 on success, -1 on failure
 // (human-readable reason is printed to the currently selected console).
 int yt_search(const char *query);
+// Home recommendations (v3.35): InnerTube /browse with the
+// FEmusic_home feed (FEmusic_charts as fallback), same anonymous
+// WEB_REMIX context as search. Fills g_results/g_result_count
+// with playable songs. Returns 0 on success, -1 on failure.
+int yt_home(void);
 // UI pump hook (v3.29): while any net.c request is in flight
 // this is called repeatedly; it should keep input and drawing
 // alive and return 1 to abort the request. Registered by

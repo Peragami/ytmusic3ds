@@ -581,6 +581,10 @@ static int prompt_query(void) {
 // of the app looking frozen (the user reported ~1 s of dead
 // input at song select, where resolve made two round trips).
 static int g_net_cancelled = 0;
+// v3.35: home recommendations are fetched at most once per
+// session, the first time the Home tab is opened with an
+// untouched (never searched) result list.
+static int g_home_tried = 0;
 static int net_pump(void) {
     hidScanInput();
     if (hidKeysDown() & KEY_B) g_net_cancelled = 1;
@@ -612,6 +616,36 @@ static void do_search_flow(void) {
     } else {
         snprintf(g_status, sizeof(g_status),
                  "Search failed or no song results.");
+    }
+    draw_all();
+}
+
+// v3.35: fill the Home list with recommendations. Mirrors
+// do_search_flow: the request runs through the v3.29 pump, so
+// the screen stays alive and B cancels.
+static void do_home_flow(void) {
+    g_home_tried = 1;
+    snprintf(g_status, sizeof(g_status), "おすすめ取得中... B: 中止");
+    draw_all();
+    thumbs_clear_bank(THUMB_BANK_RESULTS);
+    g_net_cancelled = 0;
+    int rc = yt_home();
+    if (g_net_cancelled) {
+        snprintf(g_status, sizeof(g_status), "キャンセルしました");
+        draw_all();
+        return;
+    }
+    if (rc == 0) {
+        g_selected = 0;
+        snprintf(g_status, sizeof(g_status),
+                 "おすすめ %d 曲。A: 再生。", g_result_count);
+        draw_all();
+        fetch_result_thumbs();
+        snprintf(g_status, sizeof(g_status),
+                 "おすすめ %d 曲。A: 再生。", g_result_count);
+    } else {
+        snprintf(g_status, sizeof(g_status),
+                 "おすすめを取得できませんでした");
     }
     draw_all();
 }
@@ -876,8 +910,15 @@ static void switch_tab(int tab) {
     g_selected = 0;
     if (tab == TAB_LIBRARY)
         fetch_fav_thumbs();
-    else if (tab == TAB_HOME)
-        fetch_result_thumbs();
+    else if (tab == TAB_HOME) {
+        // v3.35: first visit with an untouched list pulls the
+        // home recommendations; after a search (or a fetch) the
+        // tab just shows the current list as before.
+        if (!g_home_tried && g_result_count == 0 && !g_query[0])
+            do_home_flow();
+        else
+            fetch_result_thumbs();
+    }
     render();
 }
 
