@@ -175,8 +175,12 @@ static void draw_list_scene(void) {
         if (i >= act_count()) break;
         float y = LIST_TOP + row * ROW_H;
         int is_sel = (i == g_selected);
+        // v3.39: during playback the browsed list may be a
+        // different tab than the playing song's, so the index
+        // comparison only counts on the playing tab itself.
         int is_playing =
-            (g_playback_view && i == g_playing) ||
+            (g_playback_view && i == g_playing &&
+             list_tab() == g_playing_tab) ||
             (!g_playback_view && g_has_np &&
              strcmp(act_at(i)->id, g_np_song.id) == 0 &&
              list_tab() == g_playing_tab);
@@ -613,7 +617,9 @@ static float text_width(const char *str, float scale) {
 static void draw_nav(void) {
     C2D_DrawRectSolid(0, NAV_TOP, 0.3f, 320, 240 - NAV_TOP, COL_NAV);
     static const char *labels[4] = {"ホーム", "検索", "ライブラリ", "設定"};
-    int active = g_playback_view ? g_playing_tab : g_tab;
+    // v3.39: the nav highlights the browsed tab (during playback
+    // that is no longer necessarily the playing song's tab).
+    int active = g_tab;
     for (int t = 0; t < 4; t++) {
         float x = t * 80.0f;
         int is_active = (t == active);
@@ -713,7 +719,11 @@ static void draw_bottom_playback(play_ctl_t *ctl) {
     utf8_truncate(ctl->message, msg, sizeof(msg), 66);
     txt(8, y, 0.42f, COL_DIM, msg);
     y += 16;
-    if (g_selected != g_playing && act_count() > 0) {
+    // v3.39: compare by song id - with decoupled browsing the
+    // selection index may belong to a different list than the
+    // playing song's.
+    if (act_count() > 0 && g_selected < act_count() &&
+        strcmp(act_at(g_selected)->id, g_np_song.id) != 0) {
         char sw[128];
         char t[96];
         utf8_truncate(act_at(g_selected)->title, t, sizeof(t), 40);
@@ -807,7 +817,7 @@ void render(void) {
         draw_tint_bg(400, 0.55f, 0.20f);
         draw_top_player_scene();
     }
-    else if (g_tab == TAB_SETTINGS && !g_playback_view)
+    else if (g_tab == TAB_SETTINGS)
         draw_settings_scene();
     else
         draw_list_scene();

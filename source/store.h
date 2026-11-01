@@ -27,6 +27,8 @@ void dislike_add(const char *id);
 int like_has(const char *id);
 int like_toggle(const char *id);
 int list_tab(void);
+int play_count(void);
+result_t *play_at(int i);
 int act_count(void);
 result_t *act_at(int i);
 int act_bank(void);

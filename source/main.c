@@ -311,6 +311,8 @@ int g_playback_view = 0;
 int g_playing = -1; // index into the playing list
 int g_playing_tab = TAB_HOME;
 int g_switch_target = -1;
+// v3.39: see do_play_once - which list g_selected indexes.
+static int g_once_from_playing = 0;
 result_t g_np_song; // now-playing (or last played) song
 long g_np_likes = -1; // like count, -1 = unknown (v3.16)
 int g_has_np = 0;
@@ -342,11 +344,88 @@ int g_tq_favs_dirty = 0; // favourites bank was invalidated
 
 static void artist_from_sub(const char *sub, char *out, size_t cap);
 static void thumb_poll(void);
+static void fetch_result_thumbs(void);
+static void fetch_fav_thumbs(void);
+static int prompt_query(void);
 
 // v3.38: tab queued by a tab-bar tap during playback/download
 // (-1 = none; TAB_SEARCH means "open the search keyboard").
 // The idle loop carries it out once playback has stopped.
+// v3.39: plain tab switches happen in place during playback;
+// this queue remains only for a Search tap during the download
+// phase (the keyboard cannot open inside the download hook).
 int g_pending_tab = -1;
+// v3.39: deferred actions out of the playback hook - fetch the
+// home recommendations after playback ends, and run the
+// updater after playback ends (from the Settings row).
+int g_pending_home = 0;
+int g_pending_update = 0;
+// v3.35: home recommendations are fetched at most once per
+// session, the first time the Home tab is opened with an
+// untouched (never searched) result list. (Declared here
+// since v3.39: the playback hook reads it too.)
+static int g_home_tried = 0;
+// Set by net_pump when B cancels an in-flight request
+// (declared here since v3.39: the hook's search reads it).
+static int g_net_cancelled = 0;
+
+// v3.39: switch the browsed tab from inside the playback hook
+// without stopping the music. The playing list is unaffected
+// (g_playing_tab keeps pointing at the song's own list).
+static void hook_switch_tab(int t) {
+    g_tab = t;
+    g_selected = 0;
+    g_player_view = 0;
+    g_lyrics_view = 0;
+    if (t == TAB_LIBRARY)
+        fetch_fav_thumbs();
+    else if (t == TAB_HOME) {
+        if (!g_home_tried && g_result_count == 0 && !g_query[0])
+            g_pending_home = 1; // no network inside the hook
+        else
+            fetch_result_thumbs();
+    }
+    g_last_draw_ms = 0;
+}
+
+// v3.39: search from inside the playback hook (PLAY phase
+// only). The keyboard and the search run inside the hook call,
+// so the audio buffers drain and the song pauses while typing;
+// it resumes on cancel, and picking a result switches songs
+// through the usual A-switch path afterwards. On success the
+// playing list becomes the new results, re-anchored on the
+// current song so auto-advance still makes sense.
+static void hook_search_flow(void) {
+    if (prompt_query() != 0) return;
+    g_player_view = 0;
+    g_lyrics_view = 0;
+    snprintf(g_status, sizeof(g_status), "Searching...");
+    g_net_cancelled = 0;
+    int rc = yt_search(g_query);
+    if (g_net_cancelled) {
+        snprintf(g_status, sizeof(g_status), "キャンセルしました");
+        return;
+    }
+    if (rc != 0) {
+        snprintf(g_status, sizeof(g_status),
+                 "Search failed or no song results.");
+        return;
+    }
+    thumbs_clear_bank(THUMB_BANK_RESULTS);
+    g_tab = TAB_HOME;
+    g_selected = 0;
+    g_playing_tab = TAB_HOME;
+    g_playing = -1;
+    for (int i = 0; i < g_result_count; i++)
+        if (strcmp(g_results[i].id, g_np_song.id) == 0) {
+            g_playing = i;
+            break;
+        }
+    fetch_result_thumbs();
+    snprintf(g_status, sizeof(g_status), "%d results. A: play.",
+             g_result_count);
+    g_last_draw_ms = 0;
+}
 
 // ---------- playback UI hook ----------
 // Touch actions on the player screen while playing. Zones come
@@ -417,17 +496,23 @@ static void ui_hook(void *user) {
         touchPosition tp;
         hidTouchRead(&tp);
         if (tp.py >= NAV_TOP) {
-            // v3.38: the tab bar was dead during playback and
-            // downloads. Queue the tapped tab for the idle loop
-            // and stop playback; the tab then opens exactly as
-            // it does when idle (Search opens the keyboard).
+            // v3.39 (user request): the tab bar works during
+            // playback WITHOUT stopping the song - the browsed
+            // tab switches in place (v3.38 stopped playback;
+            // that was not what the user wanted). Search opens
+            // the keyboard in place during the PLAY phase; in
+            // the download phase it still goes through the
+            // stop-and-queue path (v3.38).
             int t = tp.px / 80;
             if (t == TAB_SEARCH) {
-                g_pending_tab = TAB_SEARCH;
-                ctl->stop_requested = 1;
-            } else if (t >= 0 && t < 4 && t != list_tab()) {
-                g_pending_tab = t;
-                ctl->stop_requested = 1;
+                if (ctl->phase == PHASE_PLAY)
+                    hook_search_flow();
+                else {
+                    g_pending_tab = TAB_SEARCH;
+                    ctl->stop_requested = 1;
+                }
+            } else if (t >= 0 && t < 4 && t != g_tab) {
+                hook_switch_tab(t);
             }
             g_last_draw_ms = 0;
         } else if (g_player_view) {
@@ -463,6 +548,45 @@ static void ui_hook(void *user) {
                 if (g_lyrics_scroll < 0) g_lyrics_scroll = 0;
             }
         }
+    } else if (g_tab == TAB_SETTINGS) {
+        // v3.39: the Settings tab is live during playback too.
+        // Same rows as idle, except the updater row cannot run
+        // mid-playback: it queues a stop + update for the idle
+        // loop instead.
+        if (k & KEY_DOWN) {
+            if (g_set_sel < 3) g_set_sel++;
+        } else if (k & KEY_UP) {
+            if (g_set_sel > 0) g_set_sel--;
+        } else if (k & (KEY_LEFT | KEY_RIGHT | KEY_A)) {
+            if (g_set_sel == 2) {
+                g_pending_update = 1;
+                ctl->stop_requested = 1;
+            } else if (g_set_sel == 3) {
+                g_kana_on = !g_kana_on;
+                config_save();
+            } else if (g_set_sel == 0) {
+                if (k & KEY_LEFT)
+                    g_quality = (g_quality + 2) % 3;
+                else
+                    g_quality = (g_quality + 1) % 3;
+                config_save();
+            } else {
+                g_thumbs_on = !g_thumbs_on;
+                if (!g_thumbs_on) {
+                    thumbs_clear_all();
+                    g_tq_bank = -1;
+                }
+                config_save();
+            }
+        }
+        if (k & KEY_R) {
+            ctl->skip_dir = 1;
+            ctl->stop_requested = 1;
+        }
+        if (k & KEY_L) {
+            ctl->skip_dir = -1;
+            ctl->stop_requested = 1;
+        }
     } else {
         // List browsing + mid-playback switch (v3.4 behaviour).
         if (k & KEY_DOWN) {
@@ -478,7 +602,12 @@ static void ui_hook(void *user) {
             if (n < 0) n = 0;
             if (n != g_selected) g_selected = n;
         }
-        if ((k & KEY_A) && act_count() > 0 && g_selected != g_playing) {
+        // v3.39: the selection may sit in a different list
+        // than the playing song's, so "is this the playing
+        // song?" is decided by song id, not by index.
+        if ((k & KEY_A) && act_count() > 0 &&
+            g_selected < act_count() &&
+            strcmp(act_at(g_selected)->id, g_np_song.id) != 0) {
             g_switch_target = g_selected;
             ctl->switch_requested = 1;
             ctl->stop_requested = 1;
@@ -608,11 +737,6 @@ static int prompt_query(void) {
 // the screen keeps redrawing and B cancels the wait instead
 // of the app looking frozen (the user reported ~1 s of dead
 // input at song select, where resolve made two round trips).
-static int g_net_cancelled = 0;
-// v3.35: home recommendations are fetched at most once per
-// session, the first time the Home tab is opened with an
-// untouched (never searched) result list.
-static int g_home_tried = 0;
 static int net_pump(void) {
     hidScanInput();
     if (hidKeysDown() & KEY_B) g_net_cancelled = 1;
@@ -762,9 +886,15 @@ static void artist_from_sub(const char *sub, char *out, size_t cap) {
 // Play the selected song once. Outcome codes for do_play_flow:
 // 0 finished, 1 stopped, 2 skip-next, 3 skip-prev, -1 error/other.
 static int do_play_once(void) {
-    result_t *r = act_at(g_selected);
+    // v3.39: g_selected indexes the BROWSED list for a fresh
+    // pick / A-switch, but the PLAYING list for skip,
+    // auto-advance and replay continuations - do_play_flow
+    // says which via g_once_from_playing, since the two lists
+    // can differ once the user browses mid-playback.
+    result_t *r = g_once_from_playing ? play_at(g_selected)
+                                      : act_at(g_selected);
     g_playing = g_selected;
-    g_playing_tab = g_tab;
+    if (!g_once_from_playing) g_playing_tab = g_tab;
     g_np_song = *r;
     g_has_np = 1;
     thumbs_clear_bank(THUMB_BANK_NP); // drop the previous song's art
@@ -873,7 +1003,9 @@ static int do_play_once(void) {
 // advance unless repeat-all). dir=-1: previous (at the top, a
 // manual skip restarts the current song).
 static int pick_next(int from, int dir, int for_auto) {
-    int n = act_count();
+    // v3.39: advance within the PLAYING list, not the browsed
+    // one (the two differ when the user browses mid-playback).
+    int n = play_count();
     if (n <= 0 || from < 0) return -1;
     if (dir > 0) {
         if (g_shuffle && n > 1) {
@@ -899,31 +1031,40 @@ static int pick_next(int from, int dir, int for_auto) {
 // prev/next skips, and automatic advance when a song finishes
 // (repeat one replays, repeat all wraps, shuffle randomises).
 static void do_play_flow(void) {
+    g_once_from_playing = 0; // the entry pick is a browsed-list index
     while (1) {
         g_switch_target = -1;
         int oc = do_play_once();
         if (g_ctl.exit_requested) break;
         if (g_switch_target >= 0) {
             g_selected = g_switch_target;
+            g_once_from_playing = 0; // A-switch: browsed-list index
             continue;
         }
         if (oc == 2) {
             int nx = pick_next(g_playing, 1, 0);
             if (nx < 0) break;
             g_selected = nx;
+            g_once_from_playing = 1;
             continue;
         }
         if (oc == 3) {
             int pv = pick_next(g_playing, -1, 0);
             if (pv < 0) break;
             g_selected = pv;
+            g_once_from_playing = 1;
             continue;
         }
         if (oc == 0) {
-            if (g_repeat == 2) continue; // replay the same song
+            if (g_repeat == 2) { // replay the same song
+                g_selected = g_playing;
+                g_once_from_playing = 1;
+                continue;
+            }
             int nx = pick_next(g_playing, 1, 1);
             if (nx < 0) break;
             g_selected = nx;
+            g_once_from_playing = 1;
             continue;
         }
         break; // stopped or error
@@ -1187,8 +1328,10 @@ int main(int argc, char **argv) {
 
     int exit_now = 0;
     while (aptMainLoop() && !exit_now) {
-        // v3.38: a tab tapped during playback/download queued
-        // itself and stopped playback; carry it out now.
+        // Queued by the playback hook (v3.38/v3.39): a Search
+        // tap during the download phase, a first Home fetch
+        // deferred out of the hook, and the Settings updater
+        // row. Carry them out now that playback has stopped.
         if (g_pending_tab >= 0) {
             int t = g_pending_tab;
             g_pending_tab = -1;
@@ -1196,6 +1339,19 @@ int main(int argc, char **argv) {
                 do_search_flow();
             else
                 switch_tab(t);
+            render();
+        }
+        if (g_pending_home) {
+            g_pending_home = 0;
+            if (g_tab == TAB_HOME && !g_home_tried &&
+                g_result_count == 0 && !g_query[0])
+                do_home_flow();
+            render();
+        }
+        if (g_pending_update) {
+            g_pending_update = 0;
+            switch_tab(TAB_SETTINGS);
+            if (do_update_flow()) exit_now = 1;
             render();
         }
         if (g_tq_favs_dirty) {

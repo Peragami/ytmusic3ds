@@ -330,7 +330,21 @@ int like_toggle(const char *id) {
 }
 
 // ---------- active list (results or favourites) ----------
-int list_tab(void) { return g_playback_view ? g_playing_tab : g_tab; }
+// v3.39: the browsed list always follows g_tab, even during
+// playback - the user can open Library / Home / Settings while
+// a song plays. The playing song's own list is tracked
+// separately (g_playing_tab) and reached via play_count() /
+// play_at() below, which drive auto-advance and skips.
+int list_tab(void) { return g_tab; }
+
+int play_count(void) {
+    return g_playing_tab == TAB_LIBRARY ? g_fav_count : g_result_count;
+}
+
+result_t *play_at(int i) {
+    if (g_playing_tab == TAB_LIBRARY) return &g_favs[i];
+    return &g_results[i];
+}
 
 int act_count(void) {
     return list_tab() == TAB_LIBRARY ? g_fav_count : g_result_count;
