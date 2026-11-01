@@ -79,8 +79,27 @@ static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
 // Requests now run on a multi handle and the pump (registered
 // from main.c) keeps input + redraw alive while waiting; it
 // can also abort the request (B button = cancel).
+static LightLock g_resolve_lock;
 static int (*g_pump)(void) = NULL;
-void net_set_pump(int (*fn)(void)) { g_pump = fn; }
+static Thread g_pump_thread = NULL;
+void net_set_pump(int (*fn)(void)) {
+    g_pump = fn;
+    g_pump_thread = threadGetCurrent();
+    LightLock_Init(&g_resolve_lock);
+}
+
+// v3.45 crash fix (hardware report on v3.44: pressed play,
+// download started, svcBreak inside GPUCMD_AddInternal with a
+// C2D flush on the stack): the pump renders the UI, so it may
+// ONLY ever run on the thread that registered it. Since v3.44
+// a background worker (stream-resolve prefetch) also calls
+// http_request; its pump calls raced the main thread's own
+// rendering and corrupted the C3D command context. Background
+// threads now simply wait without pumping - their requests are
+// fire-and-forget anyway. g_resolve_lock additionally
+// serialises resolve_stream itself (visitor cache, g_route and
+// g_direct_ctx are shared file state) between the prefetch
+// worker and the main thread.
 
 static int http_request(const char *url, const char *body, buf_t *buf,
                         long *http_out) {
@@ -112,7 +131,8 @@ static int http_request(const char *url, const char *body, buf_t *buf,
         int running = 1;
         while (running) {
             curl_multi_perform(mh, &running);
-            if (g_pump && g_pump()) {
+            if (g_pump && threadGetCurrent() == g_pump_thread &&
+                g_pump()) {
                 aborted = 1;
                 break;
             }
@@ -701,8 +721,22 @@ int resolve_stream_invidious(const char *video_id, char *url_out,
 
 // ---------- stream resolution: direct first, Invidious fallback ----------
 
+static int resolve_stream_locked(const char *video_id, char *url_out,
+                                 size_t url_cap, int *itag_out,
+                                 long *length_sec_out);
+
 int resolve_stream(const char *video_id, char *url_out, size_t url_cap,
                    int *itag_out, long *length_sec_out) {
+    LightLock_Lock(&g_resolve_lock);
+    int rc = resolve_stream_locked(video_id, url_out, url_cap,
+                                   itag_out, length_sec_out);
+    LightLock_Unlock(&g_resolve_lock);
+    return rc;
+}
+
+static int resolve_stream_locked(const char *video_id, char *url_out,
+                                 size_t url_cap, int *itag_out,
+                                 long *length_sec_out) {
     g_route = ROUTE_NONE;
     if (resolve_stream_direct(video_id, url_out, url_cap, itag_out,
                               length_sec_out) == 0) {

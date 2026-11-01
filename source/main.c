@@ -491,6 +491,7 @@ typedef struct {
     char title[TITLE_LEN];
     char artist[64];
     char *text; // malloc'd lyrics text, or NULL
+    char *synced; // malloc'd raw LRC text, or NULL (v3.45)
     long likes; // -1 = unknown
     int lyrics_rc;
 } deferred_job_t;
@@ -501,8 +502,11 @@ static void deferred_worker(void *arg) {
     (void)arg;
     deferred_job_t *j = &g_def_job;
     char *text = NULL;
-    j->lyrics_rc = lyrics_fetch_text(j->title, j->artist, &text);
+    char *synced = NULL;
+    j->lyrics_rc =
+        lyrics_fetch_text(j->title, j->artist, &text, &synced);
     j->text = text;
+    j->synced = synced;
     long lk = -1;
     j->likes = likes_fetch(j->id, &lk) == 0 ? lk : -1;
     __sync_synchronize();
@@ -516,6 +520,8 @@ static void deferred_start(void) {
     g_deferred_pending = 0;
     free(j->text);
     j->text = NULL;
+    free(j->synced);
+    j->synced = NULL;
     j->likes = -1;
     j->lyrics_rc = -1;
     strncpy(j->id, g_np_song.id, sizeof(j->id) - 1);
@@ -543,13 +549,15 @@ static void deferred_poll(void) {
     if (j->state != 2) return;
     j->state = 0;
     if (g_has_np && strcmp(j->id, g_np_song.id) == 0) {
-        lyrics_store_for(j->id, j->text);
+        lyrics_store_for(j->id, j->text, j->synced);
         g_lyrics_state = j->lyrics_rc == 0 ? 1 : 2;
         if (j->likes >= 0) g_np_likes = j->likes;
         g_last_draw_ms = 0; // lyrics pill appears promptly
     }
     free(j->text);
     j->text = NULL;
+    free(j->synced);
+    j->synced = NULL;
 }
 
 static void ui_hook(void *user) {
@@ -723,6 +731,9 @@ static void ui_hook(void *user) {
     deferred_poll();
     if (g_deferred_pending && ctl->phase == PHASE_PLAY)
         deferred_start();
+    // v3.45: synced-lyrics auto-follow while the sheet is open.
+    if (g_lyrics_view && ctl->phase == PHASE_PLAY)
+        lyrics_follow_update();
     lyrics_touch_update(); // v3.34: drag-scroll while playing
     u64 now = osGetTime();
     if (now - g_last_draw_ms >= 150) {
@@ -990,7 +1001,13 @@ static void prefetch_worker(void *arg) {
     char url[2048];
     int itag = 0;
     long ls = 0;
-    if (resolve_stream(id, url, sizeof(url), &itag, &ls) == 0) {
+    // resolve_stream records its outcome in the shared g_route;
+    // a background resolve must not rewrite the main flow's
+    // view of the route, so restore it afterwards (v3.45).
+    int saved_route = g_route;
+    int prc = resolve_stream(id, url, sizeof(url), &itag, &ls);
+    g_route = saved_route;
+    if (prc == 0) {
         if (g_prefetch.gen == gen &&
             strcmp(g_prefetch.id, id) == 0) {
             strncpy(g_prefetch.url, url, sizeof(g_prefetch.url) - 1);
@@ -1093,6 +1110,12 @@ static int do_play_once(void) {
     g_np_likes = -1;
     g_deferred_pending = 1;
 
+    // v3.45: snapshot the route THIS resolve produced. The
+    // prefetch worker kicked below also runs resolve_stream;
+    // the branch further down must follow this snapshot, never
+    // a value the worker may have rewritten in the meantime.
+    int route_now = g_route;
+
     // v3.44: line up the next song's resolve so auto-advance
     // and skips also start without a resolve wait.
     {
@@ -1107,7 +1130,7 @@ static int do_play_once(void) {
     int settled = 0;
     int tried_instance = -1;
 
-    if (g_route == ROUTE_DIRECT) {
+    if (route_now == ROUTE_DIRECT) {
         snprintf(g_route_label, sizeof(g_route_label),
                  "direct YouTube (%s) (itag %d)",
                  g_direct_ctx == 1 ? "VISIONOS" : "recipe", itag);

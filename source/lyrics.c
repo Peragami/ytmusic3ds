@@ -121,11 +121,15 @@ static void url_encode(const char *in, char *out, size_t cap) {
 }
 
 // ---------- storage ----------
+static int g_sync_ms[MAX_LINES];
+static int g_sync_count = 0;
+
 static void store_lyrics(const char *text) {
     free(g_text);
     g_text = NULL;
     g_nlines = 0;
     g_found = 0;
+    g_sync_count = 0;
     if (!text || !text[0]) return;
     size_t len = strlen(text);
     if (len > MAX_LYRICS_BYTES) len = MAX_LYRICS_BYTES;
@@ -144,11 +148,122 @@ static void store_lyrics(const char *text) {
     g_found = 1;
 }
 
+// ---------- synced lyrics (v3.45) ----------
+// LRCLIB also returns "syncedLyrics" in LRC format
+// ("[mm:ss.xx] text") for many songs. When present, the
+// display text becomes the timestamp-stripped LRC lines, so
+// display line i always matches sync entry i and the UI can
+// highlight and follow the line being sung. Songs without
+// synced data keep the plain path untouched.
+
+int lyrics_sync_count(void) { return g_found ? g_sync_count : 0; }
+
+int lyrics_sync_at(int elapsed_ms) {
+    if (!g_found || g_sync_count == 0) return -1;
+    int cur = -1;
+    for (int i = 0; i < g_sync_count; i++) {
+        if (g_sync_ms[i] <= elapsed_ms)
+            cur = i;
+        else
+            break;
+    }
+    return cur;
+}
+
+// Parse one LRC line. Returns 1 and sets *ms_out / *text_out
+// when the line starts with at least one time tag; metadata
+// tags ([ti:...] etc.) and untimed lines return 0.
+static int lrc_parse_line(const char *s, int *ms_out,
+                          const char **text_out) {
+    int found = 0;
+    int ms = 0;
+    const char *p = s;
+    while (*p == '[') {
+        const char *close = strchr(p, ']');
+        if (!close) break;
+        const char *q = p + 1;
+        int ok = 0, mm = 0, ss = 0, frac = 0;
+        if (*q >= '0' && *q <= '9') {
+            mm = (int)strtol(q, (char **)&q, 10);
+            if (*q == ':') {
+                q++;
+                if (*q >= '0' && *q <= '9') {
+                    ss = (int)strtol(q, (char **)&q, 10);
+                    if (*q == '.') {
+                        q++;
+                        const char *f0 = q;
+                        frac = (int)strtol(q, (char **)&q, 10);
+                        int nfr = (int)(q - f0);
+                        if (nfr == 1) frac *= 100;
+                        else if (nfr == 2) frac *= 10;
+                        else while (nfr > 3) { frac /= 10; nfr--; }
+                    }
+                    ok = (q == close);
+                }
+            }
+        }
+        if (!ok) break;
+        if (!found) ms = mm * 60000 + ss * 1000 + frac;
+        found = 1;
+        p = close + 1;
+    }
+    if (!found) return 0;
+    *ms_out = ms;
+    *text_out = p;
+    return 1;
+}
+
+// Store LRC text as the display lyrics plus the timestamp
+// table. Returns 1 when at least one timed line was parsed.
+static int store_synced(const char *lrc) {
+    if (!lrc || !lrc[0]) return 0;
+    char *clean = (char *)malloc(MAX_LYRICS_BYTES + 1);
+    if (!clean) return 0;
+    int ms_arr[MAX_LINES];
+    int n = 0;
+    size_t o = 0;
+    const char *p = lrc;
+    while (*p && n < MAX_LINES) {
+        const char *eol = strchr(p, '\n');
+        size_t llen = eol ? (size_t)(eol - p) : strlen(p);
+        char line[512];
+        if (llen >= sizeof(line)) llen = sizeof(line) - 1;
+        memcpy(line, p, llen);
+        line[llen] = '\0';
+        if (llen && line[llen - 1] == '\r') line[--llen] = '\0';
+        int ms = 0;
+        const char *text = NULL;
+        if (lrc_parse_line(line, &ms, &text)) {
+            size_t tl = strlen(text);
+            if (o + tl + 2 <= MAX_LYRICS_BYTES) {
+                if (n > 0) clean[o++] = '\n';
+                memcpy(clean + o, text, tl);
+                o += tl;
+                clean[o] = '\0';
+                ms_arr[n++] = ms;
+            }
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    if (n == 0) {
+        free(clean);
+        return 0;
+    }
+    store_lyrics(clean);
+    free(clean);
+    if (!g_found) return 0;
+    g_sync_count = n < g_nlines ? n : g_nlines;
+    for (int i = 0; i < g_sync_count; i++) g_sync_ms[i] = ms_arr[i];
+    return 1;
+}
+
 void lyrics_reset(void) {
     free(g_text);
     g_text = NULL;
     g_nlines = 0;
     g_found = 0;
+    g_sync_count = 0;
     g_for_id[0] = '\0';
     g_debug[0] = '\0';
 }
@@ -166,7 +281,8 @@ const char *lyrics_debug(void) { return g_debug; }
 // When out != NULL the found text is captured into *out (malloc'd,
 // caller owns it) instead of the lyrics store - the v3.43 worker
 // path, so the store itself is only ever written on the main thread.
-static int try_get(const char *title, const char *artist, char **out) {
+static int try_get(const char *title, const char *artist, char **out,
+                   char **out_sync) {
     char et[512], ea[512];
     url_encode(title, et, sizeof(et));
     url_encode(artist, ea, sizeof(ea));
@@ -185,10 +301,17 @@ static int try_get(const char *title, const char *artist, char **out) {
             const char *pl =
                 json_string_value(json_object_get(root, "plainLyrics"));
             if (pl && pl[0]) {
+                const char *sy = json_string_value(
+                    json_object_get(root, "syncedLyrics"));
                 if (out) {
                     free(*out);
                     *out = strdup(pl);
-                } else
+                    if (out_sync) {
+                        free(*out_sync);
+                        *out_sync =
+                            (sy && sy[0]) ? strdup(sy) : NULL;
+                    }
+                } else if (!(sy && sy[0] && store_synced(sy)))
                     store_lyrics(pl);
                 rc = OUT_FOUND;
             }
@@ -201,7 +324,7 @@ static int try_get(const char *title, const char *artist, char **out) {
 
 // with_artist != 0 narrows the search with artist_name.
 static int try_search(const char *title, const char *artist,
-                      int with_artist, char **out) {
+                      int with_artist, char **out, char **out_sync) {
     char et[512], ea[512];
     url_encode(title, et, sizeof(et));
     char url[1300];
@@ -223,12 +346,15 @@ static int try_search(const char *title, const char *artist,
         json_t *root = json_loads(b.data, 0, &je);
         if (root && json_is_array(root)) {
             const char *fallback = NULL;
+            const char *fallback_sync = NULL;
             size_t i;
             json_t *e;
             json_array_foreach(root, i, e) {
                 const char *pl = json_string_value(
                     json_object_get(e, "plainLyrics"));
                 if (!pl || !pl[0]) continue;
+                const char *sy = json_string_value(
+                    json_object_get(e, "syncedLyrics"));
                 const char *an = json_string_value(
                     json_object_get(e, "artistName"));
                 if (artist && artist[0] && an &&
@@ -236,18 +362,33 @@ static int try_search(const char *title, const char *artist,
                     if (out) {
                         free(*out);
                         *out = strdup(pl);
-                    } else
+                        if (out_sync) {
+                            free(*out_sync);
+                            *out_sync =
+                                (sy && sy[0]) ? strdup(sy) : NULL;
+                        }
+                    } else if (!(sy && sy[0] && store_synced(sy)))
                         store_lyrics(pl);
                     rc = OUT_FOUND;
                     break;
                 }
-                if (!fallback) fallback = pl;
+                if (!fallback) {
+                    fallback = pl;
+                    fallback_sync = sy;
+                }
             }
             if (rc != OUT_FOUND && fallback) {
                 if (out) {
                     free(*out);
                     *out = strdup(fallback);
-                } else
+                    if (out_sync) {
+                        free(*out_sync);
+                        *out_sync = (fallback_sync && fallback_sync[0])
+                                        ? strdup(fallback_sync)
+                                        : NULL;
+                    }
+                } else if (!(fallback_sync && fallback_sync[0] &&
+                             store_synced(fallback_sync)))
                     store_lyrics(fallback);
                 rc = OUT_FOUND;
             }
@@ -276,7 +417,7 @@ static void clean_title(const char *in, char *out, size_t cap) {
 // directly) and lyrics_fetch_text (captures it for the v3.43
 // worker thread). Returns 0 when lyrics were found.
 static int fetch_chain(const char *title, const char *artist,
-                       char **out) {
+                       char **out, char **out_sync) {
     int saw_busy = 0, saw_answer = 0;
     int rc;
     // If the server reports busy even after retries, every other
@@ -294,14 +435,14 @@ static int fetch_chain(const char *title, const char *artist,
             saw_answer = 1;            \
     }
     do {
-        if (artist && artist[0]) TRY(try_get(title, artist, out));
-        if (artist && artist[0]) TRY(try_search(title, artist, 1, out));
-        TRY(try_search(title, artist, 0, out));
+        if (artist && artist[0]) TRY(try_get(title, artist, out, out_sync));
+        if (artist && artist[0]) TRY(try_search(title, artist, 1, out, out_sync));
+        TRY(try_search(title, artist, 0, out, out_sync));
         char cleaned[256];
         clean_title(title, cleaned, sizeof(cleaned));
         if (strcmp(cleaned, title) != 0 && cleaned[0]) {
-            if (artist && artist[0]) TRY(try_get(cleaned, artist, out));
-            TRY(try_search(cleaned, artist, 0, out));
+            if (artist && artist[0]) TRY(try_get(cleaned, artist, out, out_sync));
+            TRY(try_search(cleaned, artist, 0, out, out_sync));
         }
     } while (0);
 #undef TRY
@@ -331,26 +472,31 @@ int lyrics_fetch(const char *video_id, const char *title,
         snprintf(g_debug, sizeof(g_debug), "タイトル不明");
         return -1;
     }
-    return fetch_chain(title, artist, NULL);
+    return fetch_chain(title, artist, NULL, NULL);
 }
 
 // v3.43: fetch for a worker thread. Does not touch the lyrics
 // store; on success *text_out is a malloc'd copy the caller owns.
 int lyrics_fetch_text(const char *title, const char *artist,
-                      char **text_out) {
+                      char **text_out, char **sync_out) {
     *text_out = NULL;
+    if (sync_out) *sync_out = NULL;
     if (!title || !title[0]) return -1;
-    return fetch_chain(title, artist, text_out);
+    return fetch_chain(title, artist, text_out, sync_out);
 }
 
 // v3.43: store text captured by lyrics_fetch_text. Main thread
 // only (the store is read by the renderer).
-void lyrics_store_for(const char *video_id, const char *text) {
+void lyrics_store_for(const char *video_id, const char *text,
+                      const char *sync_raw) {
     lyrics_reset();
     if (video_id) {
         strncpy(g_for_id, video_id, sizeof(g_for_id) - 1);
         g_for_id[sizeof(g_for_id) - 1] = '\0';
     }
+    // v3.45: synced (LRC) text wins when it parses - its lines
+    // become the display lines so highlighting stays aligned.
+    if (sync_raw && sync_raw[0] && store_synced(sync_raw)) return;
     store_lyrics(text);
 }
 

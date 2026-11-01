@@ -20,7 +20,7 @@
 #include "thumb.h"  // THUMB_MAX_*
 
 // ---------- paths ----------
-#define APP_VER "3.44"
+#define APP_VER "3.45"
 // v3.37 (user request): one fixed folder for every version -
 // updates no longer leave a new ytmusic3ds-vX.Y folder behind
 // each time. Older versioned folders are still read once via

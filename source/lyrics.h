@@ -25,8 +25,15 @@ int lyrics_fetch(const char *video_id, const char *title,
 // (on success *text_out is a malloc'd copy), then store the text
 // on the main thread with lyrics_store_for().
 int lyrics_fetch_text(const char *title, const char *artist,
-                      char **text_out);
-void lyrics_store_for(const char *video_id, const char *text);
+                      char **text_out, char **sync_out);
+void lyrics_store_for(const char *video_id, const char *text,
+                      const char *sync_raw);
+
+// Synced (LRC) lyrics, v3.45: when the stored lyrics came with
+// timestamps, display line i starts at lyrics_sync entry i.
+int lyrics_sync_count(void);
+// Index of the line being sung at elapsed_ms, or -1.
+int lyrics_sync_at(int elapsed_ms);
 
 // Line access for display (valid after a successful fetch).
 int lyrics_line_count(void);

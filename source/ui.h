@@ -19,6 +19,11 @@ void txt(float x, float y, float scale, u32 color, const char *str);
 void utf8_truncate(const char *in, char *out, size_t out_size,
                    size_t max_bytes);
 void render(void);
+
+// v3.45: synced-lyrics auto-follow. Called from the playback
+// hook; keeps the line being sung inside the two-screen sheet
+// (with a hold-off after the user scrolls by hand).
+void lyrics_follow_update(void);
 void draw_all(void);
 void render_message(const char *l1, const char *l2);
 int player_zone(int px, int py);

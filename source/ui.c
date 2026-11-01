@@ -353,6 +353,11 @@ int player_zone(int px, int py) {
 static char g_lyr_rows[LYR_MAX_ROWS][LYR_ROW_CAP];
 static int g_lyr_nrows = 0;
 static char g_lyr_key[16] = "";
+// v3.45 synced lyrics: which source line each display row
+// belongs to, and the first display row of each source line
+// (400 == MAX_LINES in lyrics.c).
+static int g_row_line[LYR_MAX_ROWS];
+static int g_line_first_row[400];
 
 static int utf8_chr_len(unsigned char c) {
     return (c & 0x80) == 0 ? 1 : (c & 0xE0) == 0xC0 ? 2
@@ -366,7 +371,9 @@ static void lyrics_rows_build(void) {
     for (int li = 0; li < total && g_lyr_nrows < LYR_MAX_ROWS;
          li++) {
         const char *line = lyrics_line(li);
+        if (li < 400) g_line_first_row[li] = g_lyr_nrows;
         if (!line[0]) { // blank line: keep it as spacing
+            g_row_line[g_lyr_nrows] = li;
             g_lyr_rows[g_lyr_nrows][0] = '\0';
             g_lyr_nrows++;
             continue;
@@ -396,6 +403,7 @@ static void lyrics_rows_build(void) {
                 cand[cl] = '\0';
                 q += chl;
             }
+            g_row_line[g_lyr_nrows] = li;
             memcpy(g_lyr_rows[g_lyr_nrows], cand, (size_t)cl + 1);
             g_lyr_nrows++;
             p = q;
@@ -415,6 +423,51 @@ static void lyrics_rows_ensure(void) {
         lyrics_rows_build();
 }
 
+// v3.45: with synced lyrics, the line being sung is drawn
+// bright and the rest dimmed (like the real app); without sync
+// data everything stays white as before. cur is computed once
+// per scene by the callers via lyr_cur_line().
+static int lyr_cur_line(void) {
+    if (lyrics_sync_count() == 0) return -1;
+    return lyrics_sync_at((int)g_ctl.elapsed_sec * 1000);
+}
+
+static u32 lyr_row_color(int row, int cur) {
+    if (lyrics_sync_count() == 0) return COL_WHITE;
+    return (cur >= 0 && g_row_line[row] == cur) ? COL_WHITE
+                                                : COL_DIM;
+}
+
+// v3.45: keep the sung line inside the visible sheet while
+// playing. If the user scrolled by hand (the scroll value no
+// longer matches what follow last set), hold off for 4 s.
+void lyrics_follow_update(void) {
+    static int follow_set = -1;
+    static u64 hold_until = 0;
+    if (!g_lyrics_view || lyrics_sync_count() == 0) return;
+    if (follow_set >= 0 && g_lyrics_scroll != follow_set)
+        hold_until = osGetTime() + 4000;
+    follow_set = g_lyrics_scroll;
+    if (osGetTime() < hold_until) return;
+    lyrics_rows_ensure();
+    int L = lyr_cur_line();
+    if (L < 0 || L >= 400) return;
+    int first = g_line_first_row[L];
+    int last = (L + 1 < lyrics_line_count())
+                   ? g_line_first_row[L + 1] - 1
+                   : g_lyr_nrows - 1;
+    if (first < g_lyrics_scroll ||
+        last > g_lyrics_scroll + LYR_VISIBLE_ROWS - 1) {
+        int s = first - 2;
+        int max_scroll = g_lyr_nrows - LYR_VISIBLE_ROWS;
+        if (max_scroll < 0) max_scroll = 0;
+        if (s < 0) s = 0;
+        if (s > max_scroll) s = max_scroll;
+        g_lyrics_scroll = s;
+        follow_set = s;
+    }
+}
+
 // Bottom half of the lyrics sheet: the rows continue from
 // the top screen, then a page indicator and the close hint.
 static void draw_bottom_lyrics(void) {
@@ -425,11 +478,12 @@ static void draw_bottom_lyrics(void) {
         if (g_lyrics_scroll > max_scroll)
             g_lyrics_scroll = max_scroll;
         if (g_lyrics_scroll < 0) g_lyrics_scroll = 0;
+        int cur = lyr_cur_line();
         for (int i = 0; i < LYR_BOT_ROWS; i++) {
             int row = g_lyrics_scroll + LYR_TOP_ROWS + i;
             if (row >= g_lyr_nrows) break;
             txt(12, LYR_BOT_Y + i * LYR_PITCH, LYR_SCALE,
-                COL_WHITE, g_lyr_rows[row]);
+                lyr_row_color(row, cur), g_lyr_rows[row]);
         }
         char pg[32];
         snprintf(pg, sizeof(pg), "%d/%d", g_lyrics_scroll + 1,
@@ -470,11 +524,12 @@ static void draw_top_player_scene(void) {
             if (g_lyrics_scroll > max_scroll)
                 g_lyrics_scroll = max_scroll;
             if (g_lyrics_scroll < 0) g_lyrics_scroll = 0;
+            int cur = lyr_cur_line();
             for (int i = 0; i < LYR_TOP_ROWS; i++) {
                 int row = g_lyrics_scroll + i;
                 if (row >= g_lyr_nrows) break;
                 txt(12, LYR_TOP_Y + i * LYR_PITCH, LYR_SCALE,
-                    COL_WHITE, g_lyr_rows[row]);
+                    lyr_row_color(row, cur), g_lyr_rows[row]);
             }
         }
         txt(12, 222, 0.42f, COL_FAINT, "十字キー・ドラッグ: スクロール");

@@ -72,14 +72,24 @@ static size_t mem_write(void *ptr, size_t size, size_t nmemb, void *ud) {
     return total;
 }
 
-// Runs on the worker thread since v3.18: a slow fetch costs the
-// UI nothing, so timeouts can stay relaxed.
+// v3.45: one persistent handle for the worker thread. Every
+// thumbnail lives on the same host (i.ytimg.com), so reusing
+// the connection skips a DNS + TCP + TLS handshake per image -
+// on the 3DS that handshake costs a sizeable fraction of a
+// second, which is why lists used to fill in slowly. Only the
+// worker thread ever touches this handle (the whole fetch path
+// runs there since v3.18), so no locking is needed. A transport
+// error drops the handle; the next fetch reconnects.
+static CURL *g_thumb_curl = NULL;
+
 static int download_jpeg(const char *video_id, int hq, membuf_t *out) {
     char url[96];
     snprintf(url, sizeof(url), "https://i.ytimg.com/vi/%s/%s.jpg",
              video_id, hq ? "hqdefault" : "mqdefault");
-    CURL *curl = curl_easy_init();
-    if (!curl) return -1;
+    if (!g_thumb_curl) g_thumb_curl = curl_easy_init();
+    if (!g_thumb_curl) return -1;
+    CURL *curl = g_thumb_curl;
+    curl_easy_reset(curl); // options reset; connection cache kept
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, mem_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
@@ -92,7 +102,10 @@ static int download_jpeg(const char *video_id, int hq, membuf_t *out) {
     CURLcode res = curl_easy_perform(curl);
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-    curl_easy_cleanup(curl);
+    if (res != CURLE_OK) {
+        curl_easy_cleanup(curl);
+        g_thumb_curl = NULL;
+    }
     if (res != CURLE_OK || code != 200 || out->overflow || !out->data ||
         out->len < 1024)
         return -1;
