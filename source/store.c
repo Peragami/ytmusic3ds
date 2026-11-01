@@ -127,7 +127,7 @@ void favs_save(void) {
 // of these actually has the file (v3.20: the old single-folder
 // fallback could resurrect stale data after several OTA hops).
 static const char *legacy_dirs[] = {
-    "ytmusic3ds-v3.34", "ytmusic3ds-v3.33", "ytmusic3ds-v3.32", "ytmusic3ds-v3.31", "ytmusic3ds-v3.30", "ytmusic3ds-v3.29", "ytmusic3ds-v3.28", "ytmusic3ds-v3.27", "ytmusic3ds-v3.26", "ytmusic3ds-v3.25", "ytmusic3ds-v3.24", "ytmusic3ds-v3.23", "ytmusic3ds-v3.22", "ytmusic3ds-v3.21", "ytmusic3ds-v3.20", "ytmusic3ds-v3.19", "ytmusic3ds-v3.18", "ytmusic3ds-v3.17",
+    "ytmusic3ds-v3.35", "ytmusic3ds-v3.34", "ytmusic3ds-v3.33", "ytmusic3ds-v3.32", "ytmusic3ds-v3.31", "ytmusic3ds-v3.30", "ytmusic3ds-v3.29", "ytmusic3ds-v3.28", "ytmusic3ds-v3.27", "ytmusic3ds-v3.26", "ytmusic3ds-v3.25", "ytmusic3ds-v3.24", "ytmusic3ds-v3.23", "ytmusic3ds-v3.22", "ytmusic3ds-v3.21", "ytmusic3ds-v3.20", "ytmusic3ds-v3.19", "ytmusic3ds-v3.18", "ytmusic3ds-v3.17",
     "ytmusic3ds-v3.16", "ytmusic3ds-v3.15", "ytmusic3ds-v3.14",
     "ytmusic3ds-v3.13", "ytmusic3ds-v3.12", "ytmusic3ds-v3.11",
 };

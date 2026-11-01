@@ -1148,10 +1148,14 @@ int main(int argc, char **argv) {
     favs_load();
 
     draw_all();
-    // v3.27 (user request): boot into the Library tab - the app
-    // opens on the user's saved songs instead of the search
-    // prompt. Search stays one tab away.
-    switch_tab(TAB_LIBRARY);
+    // v3.36 (user request): boot into the Home tab, superseding
+    // v3.27's boot-into-Library - with v3.35's recommendations
+    // the Home tab is the natural front door. g_tab starts as
+    // TAB_HOME, so pretend we are coming from the Library to
+    // make switch_tab run its body (which kicks off the
+    // first-visit recommendations fetch).
+    g_tab = TAB_LIBRARY;
+    switch_tab(TAB_HOME);
 
     int exit_now = 0;
     while (aptMainLoop() && !exit_now) {

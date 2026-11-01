@@ -136,43 +136,27 @@ static void draw_progress(float x, float y, float w, int pct) {
 
 // ---------- top screen: song list (home / library) ----------
 // v3.20: chunkier rows and bigger chips, closer to the app.
+// v3.36 (user request): the three chips (context / count /
+// quality) are gone; the section title moves up into their
+// place and the list starts higher.
 #define ROW_H 34.0f
 #define ROWS_VISIBLE 4
-#define LIST_TOP 90.0f
+#define LIST_TOP 66.0f
 
 static void draw_list_scene(void) {
     draw_logo(10, 8);
     txt(356, 14, 0.45f, COL_FAINT, "v" APP_VER);
-    // Chips row: context chip + count chip + quality chip.
-    char chip[112];
-    if (list_tab() == TAB_LIBRARY)
-        snprintf(chip, sizeof(chip), "お気に入り");
-    else if (g_query[0]) {
-        char qt[80];
-        utf8_truncate(g_query, qt, sizeof(qt), 66);
-        snprintf(chip, sizeof(chip), "%s", qt);
-    } else
-        snprintf(chip, sizeof(chip), "おすすめ");
-    draw_pill(10, 38, 150, 24, COL_SURFACE);
-    txt(24, 43, 0.48f, COL_WHITE, chip);
-    char cnt[24];
-    snprintf(cnt, sizeof(cnt), "%d 曲", act_count());
-    draw_pill(168, 38, 74, 24, COL_SURFACE);
-    txt(182, 43, 0.48f, COL_WHITE, cnt);
-    draw_pill(250, 38, 114, 24, COL_SURFACE);
-    txt(264, 43, 0.48f, COL_WHITE,
-        g_quality == 0 ? "音質: 低" : g_quality == 2 ? "音質: 高" : "音質: 標準");
     // Section title.
     if (list_tab() == TAB_LIBRARY)
-        txt(12, 66, 0.7f, COL_WHITE, "ライブラリ");
+        txt(12, 40, 0.7f, COL_WHITE, "ライブラリ");
     else if (g_query[0]) {
         char qt[80];
         char st[96];
         utf8_truncate(g_query, qt, sizeof(qt), 66);
         snprintf(st, sizeof(st), "「%s」の結果", qt);
-        txt(12, 66, 0.7f, COL_WHITE, st);
+        txt(12, 40, 0.7f, COL_WHITE, st);
     } else
-        txt(12, 66, 0.7f, COL_WHITE, "おすすめ");
+        txt(12, 40, 0.7f, COL_WHITE, "おすすめ");
     if (act_count() == 0) {
         txt(12, LIST_TOP + 6, 0.55f, COL_WHITE,
             list_tab() == TAB_LIBRARY ? "お気に入りはまだありません"
