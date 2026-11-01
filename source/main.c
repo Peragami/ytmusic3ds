@@ -495,7 +495,7 @@ static void ui_hook(void *user) {
     if (k & KEY_TOUCH) {
         touchPosition tp;
         hidTouchRead(&tp);
-        if (tp.py >= NAV_TOP) {
+        if (tp.py >= NAV_TOP && !g_lyrics_view) {
             // v3.39 (user request): the tab bar works during
             // playback WITHOUT stopping the song - the browsed
             // tab switches in place (v3.38 stopped playback;
@@ -503,6 +503,12 @@ static void ui_hook(void *user) {
             // the keyboard in place during the PLAY phase; in
             // the download phase it still goes through the
             // stop-and-queue path (v3.38).
+            // v3.40: NOT while the lyrics sheet is up - the
+            // sheet draws no tab bar, so the nav zone must not
+            // stay live underneath it (the user spotted taps
+            // and drags at the sheet's foot switching tabs).
+            // Lyrics touches are drag-scroll only, handled by
+            // lyrics_touch_update() below.
             int t = tp.px / 80;
             if (t == TAB_SEARCH) {
                 if (ctl->phase == PHASE_PLAY)
