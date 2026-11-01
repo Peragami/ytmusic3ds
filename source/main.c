@@ -474,6 +474,83 @@ static void hook_player_touch(play_ctl_t *ctl, int px, int py) {
 
 static void lyrics_touch_update(void); // defined below (v3.34)
 
+// ---------- deferred lyrics/like fetch (worker, v3.43) ----------
+// Until v3.42 this ran inline in the playback hook: the blocking
+// LRCLIB / like-count requests parked the play loop right at song
+// start, the ~0.68 s of queued ndsp audio played out, and the
+// song then stalled until the fetch returned (user report: "the
+// first ~0.5 s plays, then it stops until the download ends" -
+// present since the fetch moved to playback start in v3.32).
+// Now a one-shot worker thread fetches; the main thread only
+// applies the results (deferred_poll), so playback never waits.
+
+typedef struct {
+    volatile int state; // 0 idle, 1 running, 2 done
+    char id[VID_LEN];
+    char title[TITLE_LEN];
+    char artist[64];
+    char *text; // malloc'd lyrics text, or NULL
+    long likes; // -1 = unknown
+    int lyrics_rc;
+} deferred_job_t;
+
+static deferred_job_t g_def_job;
+
+static void deferred_worker(void *arg) {
+    (void)arg;
+    deferred_job_t *j = &g_def_job;
+    char *text = NULL;
+    j->lyrics_rc = lyrics_fetch_text(j->title, j->artist, &text);
+    j->text = text;
+    long lk = -1;
+    j->likes = likes_fetch(j->id, &lk) == 0 ? lk : -1;
+    __sync_synchronize();
+    j->state = 2;
+}
+
+// Start the fetch for the now-playing song (main thread).
+static void deferred_start(void) {
+    deferred_job_t *j = &g_def_job;
+    if (j->state == 1) return; // previous song's fetch still runs
+    g_deferred_pending = 0;
+    free(j->text);
+    j->text = NULL;
+    j->likes = -1;
+    j->lyrics_rc = -1;
+    strncpy(j->id, g_np_song.id, sizeof(j->id) - 1);
+    j->id[sizeof(j->id) - 1] = '\0';
+    strncpy(j->title, g_np_song.title, sizeof(j->title) - 1);
+    j->title[sizeof(j->title) - 1] = '\0';
+    artist_from_sub(g_np_song.sub, j->artist, sizeof(j->artist));
+    __sync_synchronize();
+    j->state = 1;
+    Thread th = threadCreate(deferred_worker, NULL, 128 * 1024,
+                             0x3F, -2, true);
+    if (!th) {
+        // No thread: skip this song's fetch rather than stall
+        // the play loop the way the old inline fetch did.
+        j->state = 0;
+        g_lyrics_state = 2;
+    }
+}
+
+// Apply a finished fetch (main thread only: the lyrics store
+// and the UI state live here). Results for a song the user has
+// already left are discarded by id.
+static void deferred_poll(void) {
+    deferred_job_t *j = &g_def_job;
+    if (j->state != 2) return;
+    j->state = 0;
+    if (g_has_np && strcmp(j->id, g_np_song.id) == 0) {
+        lyrics_store_for(j->id, j->text);
+        g_lyrics_state = j->lyrics_rc == 0 ? 1 : 2;
+        if (j->likes >= 0) g_np_likes = j->likes;
+        g_last_draw_ms = 0; // lyrics pill appears promptly
+    }
+    free(j->text);
+    j->text = NULL;
+}
+
 static void ui_hook(void *user) {
     play_ctl_t *ctl = (play_ctl_t *)user;
     hidScanInput();
@@ -640,18 +717,11 @@ static void ui_hook(void *user) {
     if (g_thumbs_on && g_has_np && !thumb_get(THUMB_BANK_NP, 0))
         thumb_job_start(THUMB_BANK_NP, 0, g_np_song.id);
     thumb_poll();
-    if (g_deferred_pending && ctl->phase == PHASE_PLAY) {
-        g_deferred_pending = 0;
-        char artist[64];
-        artist_from_sub(g_np_song.sub, artist, sizeof(artist));
-        g_lyrics_state =
-            lyrics_fetch(g_np_song.id, g_np_song.title, artist) == 0
-                ? 1
-                : 2;
-        long lk = -1;
-        if (likes_fetch(g_np_song.id, &lk) == 0) g_np_likes = lk;
-        g_last_draw_ms = 0;
-    }
+    // v3.43: the lyrics/like fetch runs on a worker thread; the
+    // hook only starts it and applies finished results.
+    deferred_poll();
+    if (g_deferred_pending && ctl->phase == PHASE_PLAY)
+        deferred_start();
     lyrics_touch_update(); // v3.34: drag-scroll while playing
     u64 now = osGetTime();
     if (now - g_last_draw_ms >= 150) {
@@ -928,7 +998,7 @@ static int do_play_once(void) {
     // v3.9: no asset fetches here any more - pressing play goes
     // straight to the download. The HQ artwork loads on the
     // worker thread and the lyrics / like count are fetched by
-    // the playback hook once playback starts (see
+    // a dedicated worker once playback starts (see
     // g_deferred_pending), so they never delay the music.
     g_lyrics_state = 0;
     g_np_likes = -1;
@@ -1334,6 +1404,7 @@ int main(int argc, char **argv) {
 
     int exit_now = 0;
     while (aptMainLoop() && !exit_now) {
+        deferred_poll(); // v3.43: land worker-fetched lyrics/likes
         // Queued by the playback hook (v3.38/v3.39): a Search
         // tap during the download phase, a first Home fetch
         // deferred out of the hook, and the Settings updater

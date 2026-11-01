@@ -163,7 +163,10 @@ const char *lyrics_line(int i) {
 const char *lyrics_debug(void) { return g_debug; }
 
 // ---------- fetch attempts ----------
-static int try_get(const char *title, const char *artist) {
+// When out != NULL the found text is captured into *out (malloc'd,
+// caller owns it) instead of the lyrics store - the v3.43 worker
+// path, so the store itself is only ever written on the main thread.
+static int try_get(const char *title, const char *artist, char **out) {
     char et[512], ea[512];
     url_encode(title, et, sizeof(et));
     url_encode(artist, ea, sizeof(ea));
@@ -182,7 +185,11 @@ static int try_get(const char *title, const char *artist) {
             const char *pl =
                 json_string_value(json_object_get(root, "plainLyrics"));
             if (pl && pl[0]) {
-                store_lyrics(pl);
+                if (out) {
+                    free(*out);
+                    *out = strdup(pl);
+                } else
+                    store_lyrics(pl);
                 rc = OUT_FOUND;
             }
             json_decref(root);
@@ -194,7 +201,7 @@ static int try_get(const char *title, const char *artist) {
 
 // with_artist != 0 narrows the search with artist_name.
 static int try_search(const char *title, const char *artist,
-                      int with_artist) {
+                      int with_artist, char **out) {
     char et[512], ea[512];
     url_encode(title, et, sizeof(et));
     char url[1300];
@@ -226,14 +233,22 @@ static int try_search(const char *title, const char *artist,
                     json_object_get(e, "artistName"));
                 if (artist && artist[0] && an &&
                     strstr(an, artist) != NULL) {
-                    store_lyrics(pl);
+                    if (out) {
+                        free(*out);
+                        *out = strdup(pl);
+                    } else
+                        store_lyrics(pl);
                     rc = OUT_FOUND;
                     break;
                 }
                 if (!fallback) fallback = pl;
             }
             if (rc != OUT_FOUND && fallback) {
-                store_lyrics(fallback);
+                if (out) {
+                    free(*out);
+                    *out = strdup(fallback);
+                } else
+                    store_lyrics(fallback);
                 rc = OUT_FOUND;
             }
             json_decref(root);
@@ -257,6 +272,51 @@ static void clean_title(const char *in, char *out, size_t cap) {
     while (n > 0 && out[n - 1] == ' ') out[--n] = '\0';
 }
 
+// The query chain shared by lyrics_fetch (stores the result
+// directly) and lyrics_fetch_text (captures it for the v3.43
+// worker thread). Returns 0 when lyrics were found.
+static int fetch_chain(const char *title, const char *artist,
+                       char **out) {
+    int saw_busy = 0, saw_answer = 0;
+    int rc;
+    // If the server reports busy even after retries, every other
+    // query shape will almost surely fail the same way - stop the
+    // chain early so the fetch does not stall for long.
+#define TRY(expr)                      \
+    {                                  \
+        rc = (expr);                   \
+        if (rc == OUT_FOUND) return 0; \
+        if (rc == OUT_BUSY) {          \
+            saw_busy = 1;              \
+            break;                     \
+        }                              \
+        if (rc == OUT_NOMATCH)         \
+            saw_answer = 1;            \
+    }
+    do {
+        if (artist && artist[0]) TRY(try_get(title, artist, out));
+        if (artist && artist[0]) TRY(try_search(title, artist, 1, out));
+        TRY(try_search(title, artist, 0, out));
+        char cleaned[256];
+        clean_title(title, cleaned, sizeof(cleaned));
+        if (strcmp(cleaned, title) != 0 && cleaned[0]) {
+            if (artist && artist[0]) TRY(try_get(cleaned, artist, out));
+            TRY(try_search(cleaned, artist, 0, out));
+        }
+    } while (0);
+#undef TRY
+    if (saw_busy)
+        snprintf(g_debug, sizeof(g_debug),
+                 "歌詞サーバーが混雑しています (HTTP %ld)",
+                 g_last_http);
+    else if (!saw_answer)
+        snprintf(g_debug, sizeof(g_debug), "ネットワークエラー");
+    else
+        snprintf(g_debug, sizeof(g_debug),
+                 "歌詞データベースに登録がありません");
+    return -1;
+}
+
 int lyrics_fetch(const char *video_id, const char *title,
                  const char *artist) {
     if (video_id && g_for_id[0] &&
@@ -271,44 +331,27 @@ int lyrics_fetch(const char *video_id, const char *title,
         snprintf(g_debug, sizeof(g_debug), "タイトル不明");
         return -1;
     }
-    int saw_busy = 0, saw_answer = 0;
-    int rc;
-    // If the server reports busy even after retries, every other
-    // query shape will almost surely fail the same way - stop the
-    // chain early so the download is not stalled for long.
-#define TRY(expr)                      \
-    {                                  \
-        rc = (expr);                   \
-        if (rc == OUT_FOUND) return 0; \
-        if (rc == OUT_BUSY) {          \
-            saw_busy = 1;              \
-            break;                     \
-        }                              \
-        if (rc == OUT_NOMATCH)         \
-            saw_answer = 1;            \
+    return fetch_chain(title, artist, NULL);
+}
+
+// v3.43: fetch for a worker thread. Does not touch the lyrics
+// store; on success *text_out is a malloc'd copy the caller owns.
+int lyrics_fetch_text(const char *title, const char *artist,
+                      char **text_out) {
+    *text_out = NULL;
+    if (!title || !title[0]) return -1;
+    return fetch_chain(title, artist, text_out);
+}
+
+// v3.43: store text captured by lyrics_fetch_text. Main thread
+// only (the store is read by the renderer).
+void lyrics_store_for(const char *video_id, const char *text) {
+    lyrics_reset();
+    if (video_id) {
+        strncpy(g_for_id, video_id, sizeof(g_for_id) - 1);
+        g_for_id[sizeof(g_for_id) - 1] = '\0';
     }
-    do {
-        if (artist && artist[0]) TRY(try_get(title, artist));
-        if (artist && artist[0]) TRY(try_search(title, artist, 1));
-        TRY(try_search(title, artist, 0));
-        char cleaned[256];
-        clean_title(title, cleaned, sizeof(cleaned));
-        if (strcmp(cleaned, title) != 0 && cleaned[0]) {
-            if (artist && artist[0]) TRY(try_get(cleaned, artist));
-            TRY(try_search(cleaned, artist, 0));
-        }
-    } while (0);
-#undef TRY
-    if (saw_busy)
-        snprintf(g_debug, sizeof(g_debug),
-                 "歌詞サーバーが混雑しています (HTTP %ld)",
-                 g_last_http);
-    else if (!saw_answer)
-        snprintf(g_debug, sizeof(g_debug), "ネットワークエラー");
-    else
-        snprintf(g_debug, sizeof(g_debug),
-                 "歌詞データベースに登録がありません");
-    return -1;
+    store_lyrics(text);
 }
 
 // ---------- like count (v3.16) ----------

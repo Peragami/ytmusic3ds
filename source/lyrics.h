@@ -21,6 +21,13 @@ void lyrics_reset(void);
 int lyrics_fetch(const char *video_id, const char *title,
                  const char *artist);
 
+// v3.43 worker-thread split: fetch without touching the store
+// (on success *text_out is a malloc'd copy), then store the text
+// on the main thread with lyrics_store_for().
+int lyrics_fetch_text(const char *title, const char *artist,
+                      char **text_out);
+void lyrics_store_for(const char *video_id, const char *text);
+
 // Line access for display (valid after a successful fetch).
 int lyrics_line_count(void);
 const char *lyrics_line(int i);
