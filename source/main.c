@@ -1095,7 +1095,7 @@ static int do_update_flow(void) {
     char self[340], tmp[360];
     snprintf(self, sizeof(self), "%s",
              g_self_path[0] ? g_self_path
-                            : APP_DIR "/ytmusic3ds-v" APP_VER ".3dsx");
+                            : APP_DIR "/ytmusic3ds.3dsx");
     snprintf(tmp, sizeof(tmp), "%s/update.tmp", APP_DIR);
     if (updater_apply(&info, self, tmp, upd_cb, err,
                       sizeof(err)) != 0) {

@@ -20,8 +20,12 @@
 #include "thumb.h"  // THUMB_MAX_*
 
 // ---------- paths ----------
-#define APP_VER "3.36"
-#define APP_DIR "sdmc:/3ds/ytmusic3ds-v3.36"
+#define APP_VER "3.37"
+// v3.37 (user request): one fixed folder for every version -
+// updates no longer leave a new ytmusic3ds-vX.Y folder behind
+// each time. Older versioned folders are still read once via
+// store.c's legacy import walk.
+#define APP_DIR "sdmc:/3ds/ytmusic3ds"
 #define FAV_PATH APP_DIR "/favorites.txt"
 #define CFG_PATH APP_DIR "/config.txt"
 #define DISLIKE_PATH APP_DIR "/dislikes.txt"
