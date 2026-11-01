@@ -343,6 +343,7 @@ int g_tq_total = 0;
 int g_tq_favs_dirty = 0; // favourites bank was invalidated
 
 static void artist_from_sub(const char *sub, char *out, size_t cap);
+static int pick_next(int from, int dir, int for_auto);
 static void thumb_poll(void);
 static void fetch_result_thumbs(void);
 static void fetch_fav_thumbs(void);
@@ -959,6 +960,89 @@ static void artist_from_sub(const char *sub, char *out, size_t cap) {
     out[n] = '\0';
 }
 
+// ---------- stream-resolve prefetch (v3.44) ----------
+// Resolving a song's stream URL (visitor fetch + /player POST)
+// is the longest single wait between pressing play and hearing
+// sound. A one-shot worker resolves the song the cursor rests
+// on (and the next song in the playing list) ahead of time;
+// do_play_once then starts with no resolve wait at all. The
+// cache holds ONE entry - the latest target wins, guarded by a
+// generation counter so a stale worker can never publish.
+
+typedef struct {
+    volatile int state; // 0 empty, 1 resolving, 2 ready
+    unsigned gen;
+    char id[VID_LEN];
+    char url[2048];
+    int itag;
+    long length_sec;
+    u64 ready_ms;
+} prefetch_t;
+
+static prefetch_t g_prefetch;
+
+static void prefetch_worker(void *arg) {
+    unsigned gen = *(unsigned *)arg;
+    free(arg);
+    char id[VID_LEN];
+    strncpy(id, g_prefetch.id, sizeof(id) - 1);
+    id[sizeof(id) - 1] = '\0';
+    char url[2048];
+    int itag = 0;
+    long ls = 0;
+    if (resolve_stream(id, url, sizeof(url), &itag, &ls) == 0) {
+        if (g_prefetch.gen == gen &&
+            strcmp(g_prefetch.id, id) == 0) {
+            strncpy(g_prefetch.url, url, sizeof(g_prefetch.url) - 1);
+            g_prefetch.url[sizeof(g_prefetch.url) - 1] = '\0';
+            g_prefetch.itag = itag;
+            g_prefetch.length_sec = ls;
+            g_prefetch.ready_ms = osGetTime();
+            __sync_synchronize();
+            g_prefetch.state = 2;
+        }
+    } else if (g_prefetch.gen == gen) {
+        g_prefetch.state = 0;
+    }
+}
+
+// Ask the worker to resolve id (direct route only). No-op when
+// that song is already resolved or already in flight.
+static void prefetch_ensure(const char *id) {
+    if (!id || !id[0]) return;
+    if (g_route != ROUTE_DIRECT) return;
+    if (g_prefetch.state != 0 &&
+        strcmp(g_prefetch.id, id) == 0)
+        return;
+    unsigned *gen = (unsigned *)malloc(sizeof(unsigned));
+    if (!gen) return;
+    *gen = ++g_prefetch.gen;
+    strncpy(g_prefetch.id, id, sizeof(g_prefetch.id) - 1);
+    g_prefetch.id[sizeof(g_prefetch.id) - 1] = '\0';
+    __sync_synchronize();
+    g_prefetch.state = 1;
+    Thread th = threadCreate(prefetch_worker, gen, 256 * 1024,
+                             0x3F, -2, true);
+    if (!th) {
+        free(gen);
+        g_prefetch.state = 0;
+    }
+}
+
+// Take a fresh cached resolve for id. Returns 1 on a hit.
+static int prefetch_take(const char *id, char *url, size_t cap,
+                         int *itag, long *length_sec) {
+    if (g_prefetch.state != 2) return 0;
+    if (strcmp(g_prefetch.id, id) != 0) return 0;
+    if (osGetTime() - g_prefetch.ready_ms > 10u * 60u * 1000u)
+        return 0; // treat stale entries as absent
+    strncpy(url, g_prefetch.url, cap - 1);
+    url[cap - 1] = '\0';
+    *itag = g_prefetch.itag;
+    *length_sec = g_prefetch.length_sec;
+    return 1;
+}
+
 // Play the selected song once. Outcome codes for do_play_flow:
 // 0 finished, 1 stopped, 2 skip-next, 3 skip-prev, -1 error/other.
 static int do_play_once(void) {
@@ -984,7 +1068,12 @@ static int do_play_once(void) {
     long length_sec = 0;
     log_reset();
     g_net_cancelled = 0;
-    if (resolve_stream(r->id, url, sizeof(url), &itag, &length_sec) != 0) {
+    // v3.44: a prefetched resolve skips the longest wait.
+    int used_cache = g_route == ROUTE_DIRECT &&
+                     prefetch_take(r->id, url, sizeof(url), &itag,
+                                   &length_sec);
+    if (!used_cache &&
+        resolve_stream(r->id, url, sizeof(url), &itag, &length_sec) != 0) {
         if (g_net_cancelled) {
             snprintf(g_status, sizeof(g_status), "キャンセルしました");
             draw_all();
@@ -1004,6 +1093,16 @@ static int do_play_once(void) {
     g_np_likes = -1;
     g_deferred_pending = 1;
 
+    // v3.44: line up the next song's resolve so auto-advance
+    // and skips also start without a resolve wait.
+    {
+        int nx = pick_next(g_playing, 1, 1);
+        if (nx >= 0 && nx != g_playing) {
+            const result_t *nr = play_at(nx);
+            if (nr) prefetch_ensure(nr->id);
+        }
+    }
+
     int rc = -1;
     int settled = 0;
     int tried_instance = -1;
@@ -1013,7 +1112,21 @@ static int do_play_once(void) {
                  "direct YouTube (%s) (itag %d)",
                  g_direct_ctx == 1 ? "VISIONOS" : "recipe", itag);
         rc = attempt_play(url, length_sec, r->id, -1);
-        if (rc == PLAY_DL_FAIL)
+        if (rc == PLAY_DL_FAIL && used_cache) {
+            // The prefetched URL went stale: drop it, resolve
+            // fresh and retry the direct route once before
+            // falling back to Invidious.
+            g_prefetch.state = 0;
+            log_dl_fail("dir*");
+            if (resolve_stream(r->id, url, sizeof(url), &itag,
+                               &length_sec) == 0) {
+                rc = attempt_play(url, length_sec, r->id, -1);
+                if (rc == PLAY_DL_FAIL)
+                    log_dl_fail("dir");
+                else
+                    settled = 1;
+            }
+        } else if (rc == PLAY_DL_FAIL)
             log_dl_fail("dir");
         else
             settled = 1;
@@ -1405,6 +1518,25 @@ int main(int argc, char **argv) {
     int exit_now = 0;
     while (aptMainLoop() && !exit_now) {
         deferred_poll(); // v3.43: land worker-fetched lyrics/likes
+        // v3.44: when the cursor has rested on a song for a
+        // moment, resolve its stream URL ahead of time.
+        {
+            static int pf_tab = -1, pf_sel = -1, pf_count = -1;
+            static u64 pf_since = 0;
+            int cnt = act_count();
+            if (cnt > 0 && g_selected >= 0 && g_selected < cnt) {
+                if (g_tab != pf_tab || g_selected != pf_sel ||
+                    cnt != pf_count) {
+                    pf_tab = g_tab;
+                    pf_sel = g_selected;
+                    pf_count = cnt;
+                    pf_since = osGetTime();
+                } else if (osGetTime() - pf_since >= 600) {
+                    const result_t *sr = act_at(g_selected);
+                    if (sr) prefetch_ensure(sr->id);
+                }
+            }
+        }
         // Queued by the playback hook (v3.38/v3.39): a Search
         // tap during the download phase, a first Home fetch
         // deferred out of the hook, and the Settings updater

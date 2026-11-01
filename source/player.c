@@ -146,7 +146,9 @@ static size_t dl_header(void *ptr, size_t size, size_t nmemb,
 // used since v3.3 download completely). Chunking is still required:
 // with itag 249 a single 512 KiB range request is refused with 403
 // even at offset 0, while 256 KiB works (measured on the build VM,
-// 2026-10-31; see report.md). So: fetch in 256 KiB Range chunks.
+// 2026-10-31; see report.md). So: fetch in 256 KiB Range chunks
+// (64 KiB for the first chunk since v3.44 - smaller ranges were
+// verified fine for all three audio itags).
 //
 // All chunks of one download go through ONE curl easy handle created
 // once per download (HTTP/1.1 pinned, no fresh-connect), so libcurl
@@ -162,6 +164,12 @@ static size_t dl_header(void *ptr, size_t size, size_t nmemb,
 // failure records ctl->fail_* diagnostics for the UI error log.
 // Returns 0 = complete, 1 = stopped, -1 = failed, -2 = overflow.
 #define DL_CHUNK (256u * 1024)
+// v3.44: the first chunk is smaller so the stream can be
+// published (and playback started) sooner; later chunks use
+// DL_CHUNK. Verified against the real server for itags
+// 249/250/251: a 64 KiB range and a 256 KiB continuation both
+// answer 206 with exact lengths.
+#define DL_FIRST_CHUNK (64u * 1024)
 #define DL_MAX_RERESOLVE 5
 
 // Where a cut download re-issues its URL from.
@@ -221,7 +229,8 @@ static int download_media(const char *url0, int rr_kind,
             break;
         }
         size_t from = ctx->len;
-        size_t to = from + DL_CHUNK - 1;
+        size_t step = from == 0 ? DL_FIRST_CHUNK : DL_CHUNK;
+        size_t to = from + step - 1;
         if (total >= 0 && (long)to >= total) to = (size_t)total - 1;
 
         char range[64];
