@@ -499,10 +499,20 @@ static void draw_bottom_lyrics(void) {
 
 static void draw_top_player_scene(void) {
     if (g_lyrics_view) {
-        txt(12, 8, 0.62f, COL_WHITE, "歌詞");
+        // v3.48 (user request, styled on the real app's lyrics
+        // screen): a mini header - jacket, song title, artist
+        // line - so the song stays identifiable while the
+        // lyrics sheet covers both screens. The old layout had
+        // only a small dim title next to the section label,
+        // which was easy to miss.
+        if (thumb_get(THUMB_BANK_NP, 0))
+            draw_thumb(THUMB_BANK_NP, 0, 12, 5, 36, 1);
         char t[96];
-        utf8_truncate(g_np_song.title, t, sizeof(t), 60);
-        txt(70, 12, 0.5f, COL_DIM, t);
+        utf8_truncate(g_np_song.title, t, sizeof(t), 63);
+        txt(56, 6, 0.54f, COL_WHITE, t);
+        char sb[96];
+        utf8_truncate(g_np_song.sub, sb, sizeof(sb), 72);
+        txt(56, 28, 0.44f, COL_DIM, sb);
         if (g_lyrics_state == 0) {
             txt(12, 70, 0.55f, COL_WHITE,
                 g_playback_view ? "歌詞取得中..."
