@@ -369,6 +369,10 @@ static int g_home_tried = 0;
 // Set by net_pump when B cancels an in-flight request
 // (declared here since v3.39: the hook's search reads it).
 static int g_net_cancelled = 0;
+// v3.46: START pressed during a pumped network wait - the wait
+// aborts like a B cancel, and the idle loop turns this into a
+// full safe shutdown at its head.
+static int g_start_exit = 0;
 
 // v3.39: switch the browsed tab from inside the playback hook
 // without stopping the music. The playing list is unaffected
@@ -570,9 +574,22 @@ static void ui_hook(void *user) {
     // never appears in hidKeysDown at all - the user reported
     // Y (back to the list) feeling dead while downloading.
     static int y_was_held = 0, b_was_held = 0;
+    static int start_was_held = 0;
     u32 held = hidKeysHeld();
     if ((held & KEY_B) && !b_was_held) ctl->stop_requested = 1;
     b_was_held = (held & KEY_B) != 0;
+    if ((held & KEY_START) && !start_was_held) {
+        // v3.46 (user request): START closes the app from
+        // playback/download too, through the same safe path
+        // as a system close - stop_requested unwinds the play
+        // loop, whose cleanup aborts and joins the download
+        // thread and tears the audio path down in order; the
+        // idle loop then sees exit_requested and runs the
+        // normal shutdown sequence.
+        ctl->stop_requested = 1;
+        ctl->exit_requested = 1;
+    }
+    start_was_held = (held & KEY_START) != 0;
     if ((held & KEY_Y) && !y_was_held) {
         g_player_view = !g_player_view;
         g_last_draw_ms = 0;
@@ -717,6 +734,10 @@ static void ui_hook(void *user) {
         ctl->stop_requested = 1;
         ctl->exit_requested = 1;
     }
+    if (g_start_exit) { // START during an in-hook network wait
+        ctl->stop_requested = 1;
+        ctl->exit_requested = 1;
+    }
     // Deferred fetches. HQ artwork loads on the worker thread
     // (v3.18): keep asking until the job is accepted, and land
     // it via thumb_poll. Lyrics and the like count are fetched
@@ -828,6 +849,10 @@ static int prompt_query(void) {
 static int net_pump(void) {
     hidScanInput();
     if (hidKeysDown() & KEY_B) g_net_cancelled = 1;
+    if (hidKeysDown() & KEY_START) {
+        g_start_exit = 1;
+        g_net_cancelled = 1;
+    }
     draw_all();
     return g_net_cancelled;
 }
@@ -1540,6 +1565,7 @@ int main(int argc, char **argv) {
 
     int exit_now = 0;
     while (aptMainLoop() && !exit_now) {
+        if (g_start_exit) exit_now = 1; // v3.46
         deferred_poll(); // v3.43: land worker-fetched lyrics/likes
         // v3.44: when the cursor has rested on a song for a
         // moment, resolve its stream URL ahead of time.
