@@ -839,7 +839,13 @@ static int prompt_query_swkbd(void) {
 }
 
 static int prompt_query(void) {
-    return g_kana_on ? kana_prompt() : prompt_query_swkbd();
+    if (!g_kana_on) return prompt_query_swkbd();
+    int rc = kana_prompt();
+    if (rc == -2) { // v3.47: START in the keyboard = close app
+        g_start_exit = 1;
+        return -1;
+    }
+    return rc;
 }
 
 // v3.29: net.c calls this while a request is in flight, so

@@ -310,7 +310,7 @@ static void kana_render(const char *buf, int cur, int mode,
     txt(12, 128, 0.48f, COL_DIM,
         "タップ連打： トグル　フリック： 上下左右");
     txt(12, 154, 0.48f, COL_DIM,
-        "◀▶： カーソル移動　B： もどる　START： 検索");
+        "◀▶： カーソル移動　B： もどる　START： 終了");
     // ---- bottom screen ----
     C2D_TargetClear(g_bot_tgt, COL_BG);
     C2D_SceneBegin(g_bot_tgt);
@@ -395,11 +395,11 @@ int kana_prompt(void) {
         u32 kd = hidKeysDown();
         u32 kh = hidKeysHeld();
         if (kd & KEY_B) return -1;
-        if ((kd & KEY_START) && buf[0]) {
-            strncpy(g_query, buf, sizeof(g_query) - 1);
-            g_query[sizeof(g_query) - 1] = '\0';
-            return 0;
-        }
+        // v3.47 (user request): START closes the app, like
+        // everywhere else since v3.46 - it no longer submits
+        // the search (the on-screen search key still does).
+        // -2 tells prompt_query to raise the safe-exit flag.
+        if (kd & KEY_START) return -2;
         if (kd & KEY_X) {
             kb_delete_before(buf, &cur);
             pending = -1;
